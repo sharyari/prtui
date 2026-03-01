@@ -5,6 +5,7 @@ import config
 
 _cfg = config.read_config()
 JENKINS_USER = _cfg["jenkins-user"]
+USER = _cfg["username"]
 
 
 def has_data():
@@ -26,9 +27,19 @@ def get_pull_requests(type):
     if not prdb.db_exists():
         return []
     with prdb.connection() as cursor:
-        return [
-            {**pr, "state": _pr_state(pr)} for pr in prdb.pr_get_all(cursor, type)
-        ]
+        prs = []
+        for pr in prdb.pr_get_all(cursor, type):
+            names = [n for n in (pr["approvals"] or "").split(",") if n]
+            jenkins = [n for n in names if n == JENKINS_USER]
+            others = [n for n in names if n != JENKINS_USER]
+            prs.append({
+                **pr,
+                "state": _pr_state(pr),
+                "approval_count": len(others),
+                "jenkins_approved": bool(jenkins),
+                "my_approved": USER in others,
+            })
+        return prs
 
 
 def mark_read(repo, number):

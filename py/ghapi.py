@@ -16,11 +16,15 @@ REPOS = _cfg["repos"]
 USER = _cfg["username"]
 TEAM = _cfg.get("team", "")
 
+_api_calls = 0
+
 
 def _paginate(url, params=None):
     """Paginate a GitHub API endpoint, yielding JSON items."""
+    global _api_calls
     params = params or {"per_page": 100}
     while url:
+        _api_calls += 1
         resp = requests.get(url, headers=HEADERS, params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -57,6 +61,8 @@ def get_my_prs():
 
 def _get_requested_reviewers(pr_number, repo):
     """Fetch requested reviewers for a PR (users and teams)."""
+    global _api_calls
+    _api_calls += 1
     url = f"{API}/repos/{repo}/pulls/{pr_number}/requested_reviewers"
     resp = requests.get(url, headers=HEADERS)
     resp.raise_for_status()
@@ -95,17 +101,25 @@ def get_review_prs():
                 seen.add(key)
                 reviewer_prs.append(pr)
 
-    # PRs where I'm requested — classify via endpoint
+    # PRs where I'm requested — classify via endpoint in parallel
+    from concurrent.futures import ThreadPoolExecutor
+    candidates = []
     for repo in REPOS:
         for pr in _search_prs(
             f"repo:{repo} type:pr state:open review-requested:{USER}",
             "reviewer", repo
         ):
             key = (pr["repo"], pr["number"])
-            if key in seen:
-                continue
-            seen.add(key)
-            users, teams = _get_requested_reviewers(pr["number"], pr["repo"])
+            if key not in seen:
+                seen.add(key)
+                candidates.append(pr)
+
+    def _classify(pr):
+        users, teams = _get_requested_reviewers(pr["number"], pr["repo"])
+        return pr, users, teams
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for pr, users, teams in pool.map(_classify, candidates):
             if USER in users:
                 pr["type"] = "reviewer"
                 reviewer_prs.append(pr)
@@ -116,22 +130,45 @@ def get_review_prs():
     return reviewer_prs, requested_prs
 
 
-def get_approvals(pr_number, repo):
-    """Fetch reviews for a PR, returning list of approving usernames."""
-    reviews = {}
+# Map GitHub review states to comment types for display.
+_REVIEW_TYPE = {
+    "APPROVED": "approval",
+    "CHANGES_REQUESTED": "changes_requested",
+    "DISMISSED": "dismissed",
+}
+
+
+def get_reviews(pr_number, repo):
+    """Fetch reviews for a PR.
+
+    Returns (approvers, review_comments) where approvers is a list of
+    usernames whose latest non-COMMENTED state is APPROVED, and
+    review_comments is a list of comment dicts for storing in the
+    COMMENTS table.
+    """
+    latest_state = {}
+    review_comments = []
     for r in _paginate(f"{API}/repos/{repo}/pulls/{pr_number}/reviews"):
-        if r["state"] == "COMMENTED":
-            continue
         user = r["user"]["login"]
-        reviews[user] = {
-            "user": user,
-            "state": r["state"],
-            "submitted_at": r["submitted_at"],
-        }
-    return [
-        user for user, review in reviews.items()
-        if review["state"] == "APPROVED"
-    ]
+        state = r["state"]
+        if state != "COMMENTED":
+            latest_state[user] = state
+            body = f"**[{state}]** {r['body']}" if r["body"] else f"**[{state}]**"
+            review_comments.append({
+                "id": r["id"],
+                "pr_number": pr_number,
+                "pr_repo": repo,
+                "user": user,
+                "body": body,
+                "created_at": r["submitted_at"],
+                "updated_at": r["submitted_at"],
+                "path": "",
+                "diff_hunk": "",
+                "in_reply_to_id": None,
+                "type": _REVIEW_TYPE.get(state, "comment"),
+            })
+    approvers = [u for u, s in latest_state.items() if s == "APPROVED"]
+    return approvers, review_comments
 
 
 def get_comments(pr_number, repo):
@@ -170,13 +207,26 @@ def get_comments(pr_number, repo):
     return comments
 
 
+def _fetch_pr_details(pr):
+    """Fetch comments and reviews for a single PR. Returns (pr, comments)."""
+    comments = get_comments(pr["number"], pr["repo"])
+    approvers, review_comments = get_reviews(pr["number"], pr["repo"])
+    comments.extend(review_comments)
+    pr["approvals"] = ",".join(approvers)
+    return pr, comments
+
+
 def fetch_and_store(on_progress=None):
     """Fetch PRs and comments from GitHub and store in the database."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     def progress(msg):
         if on_progress:
             on_progress(msg)
 
     progress("Fetching your PRs...")
+    global _api_calls
+    _api_calls = 0
     prs = get_my_prs()
     progress("Fetching review PRs...")
     reviewer_prs, requested_prs = get_review_prs()
@@ -184,9 +234,14 @@ def fetch_and_store(on_progress=None):
     prs.extend(requested_prs)
 
     comments = []
-    for i, pr in enumerate(prs):
-        progress(f"Fetching comments ({i + 1}/{len(prs)})...")
-        comments.extend(get_comments(pr["number"], pr["repo"]))
+    done = 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_fetch_pr_details, pr): pr for pr in prs}
+        for future in as_completed(futures):
+            pr, pr_comments = future.result()
+            comments.extend(pr_comments)
+            done += 1
+            progress(f"Fetching comments ({done}/{len(prs)})...")
 
     with prdb.connection() as cursor:
         prdb.create_pr_table(cursor)
@@ -195,6 +250,8 @@ def fetch_and_store(on_progress=None):
             prdb.pr_insert(cursor, pr)
         for comment in comments:
             prdb.comment_insert(cursor, comment)
+
+    progress(f"Done ({_api_calls} API calls)")
 
 if __name__ == "__main__":
     fetch_and_store()

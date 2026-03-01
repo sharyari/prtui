@@ -83,13 +83,19 @@ class GhMail(NavigationMixin, App):
             table.clear(columns=True)
             table.cursor_type = "row"
             table.zebra_stripes = True
-            table.add_columns("State", "Repo", "Title", "Author")
+            table.add_columns("State", "Repo", "Title", "Author", "Approvals", "CI")
             for pr in prs:
+                ci = "✓" if pr["jenkins_approved"] else ""
+                approvals = str(pr["approval_count"]) if pr["approval_count"] else ""
+                if pr.get("my_approved"):
+                    approvals = f"✓ {approvals}".strip()
                 table.add_row(
                     STATE_DISPLAY[pr["state"]],
                     pr["repo"],
                     pr["title"],
                     pr["author"],
+                    approvals,
+                    ci,
                     key=f"{pr['repo']}#{pr['number']}",
                 )
         self.query_one("#prs", DataTable).focus()
@@ -119,13 +125,14 @@ class GhMail(NavigationMixin, App):
     def _hide_comments(self) -> None:
         panel = self.query_one("#comments", VerticalScroll)
         panel.display = False
-        self._focused_table().focus()
+        self.query_one(f"#{self._comments_source}", DataTable).focus()
 
     def _show_comments(self) -> None:
         key = self._selected_pr_key()
         if not key:
             return
         repo, number = key
+        self._comments_source = self._focused_table().id or "prs"
         panel = self.query_one("#comments", VerticalScroll)
         comments.populate_panel(panel, repo, number)
         panel.display = True

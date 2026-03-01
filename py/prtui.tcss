@@ -14,9 +14,9 @@ LoadingIndicator {
 #comments {
     display: none;
     layer: overlay;
-    width: 80%;
-    height: 80%;
-    margin: 2 4;
+    width: 100%;
+    height: 100%;
+    margin: 3 3 3 3;
     background: $surface;
     border: thick $accent;
     padding: 1 2;
