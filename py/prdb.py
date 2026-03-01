@@ -20,7 +20,7 @@ pr_table_creation_query = """
 
 comments_table_creation_query = """
     CREATE TABLE IF NOT EXISTS COMMENTS (
-        id INT PRIMARY KEY,
+        id TEXT PRIMARY KEY,
         pr_number INT,
         pr_repo CHAR(25),
         user CHAR(25),

@@ -7,6 +7,7 @@ from textual.binding import Binding
 from textual.coordinate import Coordinate
 import threading
 import webbrowser
+from datetime import datetime, timezone
 import store
 import ghapi
 from navigation import NavigationMixin
@@ -110,10 +111,14 @@ class GhMail(NavigationMixin, App):
         table = self._focused_table()
         row = table.cursor_row
         prs = self.prs.get(table.id or "", [])
-        prs[row]["state"] = "read"
         repo, number = self._get_pr_key(table)
         store.mark_read(repo, number)
+        prs[row]["state"] = "read"
+        prs[row]["read_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         table.update_cell_at(Coordinate(row, STATE_COL), STATE_DISPLAY["read"])
+        panel = self.query_one("#comments", VerticalScroll)
+        if panel.display:
+            comments.populate_panel(panel, repo, number, prs[row]["read_at"])
 
     def _selected_pr_key(self):
         """Return (repo, number) for the currently selected PR row."""
@@ -133,8 +138,11 @@ class GhMail(NavigationMixin, App):
             return
         repo, number = key
         self._comments_source = self._focused_table().id or "prs"
+        table = self._focused_table()
+        prs = self.prs.get(table.id or "", [])
+        read_at = prs[table.cursor_row].get("read_at")
         panel = self.query_one("#comments", VerticalScroll)
-        comments.populate_panel(panel, repo, number)
+        comments.populate_panel(panel, repo, number, read_at)
         panel.display = True
         panel.focus()
 

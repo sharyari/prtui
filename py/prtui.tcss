@@ -18,6 +18,24 @@ LoadingIndicator {
     height: 100%;
     margin: 3 3 3 3;
     background: $surface;
-    border: thick $accent;
+    border: round $accent;
     padding: 1 2;
+}
+.review-approval {
+    background: darkgreen;
+}
+.review-changes-requested {
+    background: darkorange;
+}
+.review-dismissed {
+    background: grey;
+}
+.comment-body {
+    background: #252535;
+}
+.comment-thread {
+    background: #2d2d3d;
+}
+.commit {
+    background: darkblue;
 }

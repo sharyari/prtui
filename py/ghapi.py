@@ -207,11 +207,36 @@ def get_comments(pr_number, repo):
     return comments
 
 
+def get_commits(pr_number, repo):
+    """Fetch commits on a PR, returned as comment-shaped dicts."""
+    commits = []
+    for c in _paginate(f"{API}/repos/{repo}/pulls/{pr_number}/commits"):
+        sha = c["sha"]
+        msg = c["commit"]["message"].split("\n", 1)[0]
+        author = (c["author"] or {}).get("login", c["commit"]["author"]["name"])
+        print(f"  commit {sha[:8]} by {author}: {msg}")
+        commits.append({
+            "id": int(sha[:12], 16),
+            "pr_number": pr_number,
+            "pr_repo": repo,
+            "user": author,
+            "body": f"`{sha[:8]}` {msg}",
+            "created_at": c["commit"]["committer"]["date"],
+            "updated_at": c["commit"]["committer"]["date"],
+            "path": "",
+            "diff_hunk": "",
+            "in_reply_to_id": None,
+            "type": "commit",
+        })
+    return commits
+
+
 def _fetch_pr_details(pr):
     """Fetch comments and reviews for a single PR. Returns (pr, comments)."""
     comments = get_comments(pr["number"], pr["repo"])
     approvers, review_comments = get_reviews(pr["number"], pr["repo"])
     comments.extend(review_comments)
+    comments.extend(get_commits(pr["number"], pr["repo"]))
     pr["approvals"] = ",".join(approvers)
     return pr, comments
 
