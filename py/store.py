@@ -1,6 +1,15 @@
 """Data store — bridges the database and the UI layer."""
 
 import prdb
+import config
+
+_cfg = config.read_config()
+JENKINS_USER = _cfg["jenkins-user"]
+
+
+def has_data():
+    """Return True if the database exists."""
+    return prdb.db_exists()
 
 
 def _pr_state(pr):
@@ -16,24 +25,41 @@ def get_pull_requests(type):
     """Fetch all PRs from the DB, formatted for presentation."""
     if not prdb.db_exists():
         return []
-    conn, cursor = prdb.connect()
-    prs = [
-        {**pr, "state": _pr_state(pr)} for pr in prdb.pr_get_all(cursor, type)
-    ]
-    prdb.disconnect(conn)
-    return prs
+    with prdb.connection() as cursor:
+        return [
+            {**pr, "state": _pr_state(pr)} for pr in prdb.pr_get_all(cursor, type)
+        ]
 
 
 def mark_read(repo, number):
     """Mark a PR as read now."""
-    conn, cursor = prdb.connect()
-    prdb.pr_mark_read(cursor, repo, number)
-    prdb.disconnect(conn)
+    with prdb.connection() as cursor:
+        prdb.pr_mark_read(cursor, repo, number)
+
+
+def get_pr_url(repo, number):
+    """Return the GitHub URL for a PR."""
+    return f"https://github.com/{repo}/pull/{number}"
 
 
 def get_comments(repo, number):
-    """Fetch comments for a PR, formatted for presentation."""
-    conn, cursor = prdb.connect()
-    comments = prdb.get_comments(cursor, number, repo)
-    prdb.disconnect(conn)
-    return comments
+    """Fetch comments for a PR, grouped into threads."""
+    with prdb.connection() as cursor:
+        comments = prdb.get_comments(cursor, number, repo)
+
+    if JENKINS_USER:
+        jenkins = [c for c in comments if c["user"] == JENKINS_USER]
+        comments = [c for c in comments if c["user"] != JENKINS_USER]
+        if jenkins:
+            comments.append(jenkins[-1])
+
+    # Group into threads
+    threads = {}
+    order = []
+    for c in comments:
+        root_id = c["in_reply_to_id"] or c["id"]
+        if root_id not in threads:
+            threads[root_id] = []
+            order.append(root_id)
+        threads[root_id].append(c)
+    return [threads[root_id] for root_id in order]

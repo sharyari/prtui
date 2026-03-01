@@ -6,7 +6,7 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "config"
 
 
 def read_config():
-    """Read key:value pairs from the .token file."""
+    """Read key:value pairs from the config file."""
     cfg = {}
     with open(CONFIG_PATH) as fp:
         for line in fp:
@@ -22,5 +22,6 @@ def read_config():
         if r:
             repos.append(r)
     cfg["repos"] = repos
+    cfg["jenkins-user"] = cfg.get("jenkins-user", "")
 
     return cfg

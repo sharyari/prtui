@@ -11,9 +11,13 @@ DataTable:focus > .datatable--cursor {
 LoadingIndicator {
     display: none;
 }
-#status {
-    height: 1;
+#comments {
+    display: none;
+    layer: overlay;
+    width: 80%;
+    height: 80%;
+    margin: 2 4;
     background: $surface;
-    color: $text-muted;
-    padding: 0 1;
+    border: thick $accent;
+    padding: 1 2;
 }
