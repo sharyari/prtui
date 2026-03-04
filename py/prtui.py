@@ -55,7 +55,13 @@ class CommentsPanel(VerticalScroll):
 
 class QuitScreen(ModalScreen[bool]):
     """Screen with a dialog to quit."""
-
+    BINDINGS = [
+        Binding("escape", "dismiss", show= False),
+        Binding("h", "next", show=False),
+        Binding("l", "next", show=False),
+        Binding("right", "next", show=False),
+        Binding("left", "next", show=False),
+    ]
     def compose(self) -> ComposeResult:
         yield Grid(
             Label("Are you sure you want to quit?", id="question"),
@@ -69,6 +75,19 @@ class QuitScreen(ModalScreen[bool]):
             self.dismiss(True)
         else:
             self.dismiss(False)
+
+    def action_dismiss(self) -> None:
+        self.dismiss()
+
+    def action_next(self):
+        panel = self.query_one("#dialog", Grid)
+        buttons = list(panel.query(Button))
+        node = self.focused
+        if isinstance(node, Button) and node in buttons:
+            idx = buttons.index(node)
+            target = buttons[(idx + 1) % len(buttons)]
+            target.focus()
+
 
 class GhMail(NavigationMixin, App):
     CSS_PATH = "prtui.tcss"
