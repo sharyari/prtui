@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import config
 
-DB_PATH = Path(config.read_config().get('db-path', '/tmp/prtui.db'))
+DB_PATH = Path(config.read_config().get('db-path', str(config.CONFIG_PATH.parent / 'prtui.db')))
 
 pr_table_creation_query = """
     CREATE TABLE IF NOT EXISTS PRS (

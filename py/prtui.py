@@ -103,6 +103,7 @@ class GhMail(NavigationMixin, App):
         Binding("b", "open_ci", "Open CI"),
         Binding("t", "open_ticket", "Open Ticket"),
         Binding("c", "open_comments", "Open Comments"),
+        Binding("ctrl+d", "toggle_dark", "Toggle Theme", show=False),
         Binding("tab", "focus_next_table", "Next Table", show=True),
         Binding("shift+tab", "focus_prev_table", "Prev Table", show=True),
         Binding("j", "cursor_down", show=False),
@@ -122,11 +123,15 @@ class GhMail(NavigationMixin, App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.theme = config.load_theme()
         self.query_one("#group-prs").border_title = "My PRs"
         self.query_one("#group-reviewer").border_title = "Reviewing"
         self.query_one("#group-requested").border_title = "Team Requested"
         threading.Thread(target=self._fetch_worker, daemon=True).start()
         self.set_interval(POLL_INTERVAL, self._poll_updates)
+
+    def watch_theme(self, theme: str) -> None:
+        config.save_theme(theme)
 
     def _fetch_worker(self) -> None:
         """Load DB, populate tables, then poll for updates."""

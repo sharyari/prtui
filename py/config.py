@@ -3,6 +3,7 @@
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config"
+STATE_PATH = Path(__file__).resolve().parent.parent / ".state"
 
 
 def read_config():
@@ -25,3 +26,16 @@ def read_config():
     cfg["jenkins-user"] = cfg.get("jenkins-user", "")
 
     return cfg
+
+
+def load_theme() -> str:
+    """Return saved theme name, defaulting to textual-dark."""
+    try:
+        return STATE_PATH.read_text().strip()
+    except FileNotFoundError:
+        return "textual-dark"
+
+
+def save_theme(theme: str) -> None:
+    """Persist theme name."""
+    STATE_PATH.write_text(theme)

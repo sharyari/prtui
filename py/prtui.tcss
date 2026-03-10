@@ -34,25 +34,25 @@ LoadingIndicator {
     padding: 1 2;
 }
 .review-approval {
-    background: darkgreen;
+    background: $success 20%;
 }
 .review-changes-requested {
-    background: darkorange;
+    background: $warning 20%;
 }
 .review-dismissed {
-    background: grey;
+    background: $surface-darken-1;
 }
 .comment-body {
-    background: #252535;
+    background: $panel;
 }
 .comment-thread {
-    background: #2d2d3d;
+    background: $surface-darken-1;
 }
 CollapsibleTitle:focus {
     background: $accent;
 }
 .commit {
-    background: darkblue;
+    background: $primary 20%;
 }
 
 /* Quit dialog */
