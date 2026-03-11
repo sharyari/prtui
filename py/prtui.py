@@ -122,7 +122,9 @@ class GhMail(NavigationMixin, App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.theme = config.load_theme()
+        self._initializing = True
+        self.theme = getattr(self, "_initial_theme", "textual-dark")
+        self._initializing = False
         self.query_one("#group-prs").border_title = "My PRs"
         self.query_one("#group-reviewer").border_title = "Reviewing"
         self.query_one("#group-requested").border_title = "Team Requested"
@@ -130,7 +132,8 @@ class GhMail(NavigationMixin, App):
         self.set_interval(POLL_INTERVAL, self._poll_updates)
 
     def watch_theme(self, theme: str) -> None:
-        config.save_theme(theme)
+        if not getattr(self, "_initializing", False):
+            config.save_theme(theme)
 
     def _fetch_worker(self) -> None:
         """Load DB, populate tables, then poll for updates."""
@@ -347,4 +350,6 @@ class GhMail(NavigationMixin, App):
         self.push_screen(QuitScreen(), callback=self._handle_quit)
 
 if __name__ == "__main__":
-    GhMail().run()
+    app = GhMail()
+    app._initial_theme = config.load_theme()
+    app.run()
