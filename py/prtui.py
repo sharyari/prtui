@@ -625,6 +625,11 @@ class GhMail(NavigationMixin, App):
         self.push_screen(HelpScreen())
 
 if __name__ == "__main__":
-    app = GhMail()
-    app._initial_theme = config.load_theme()
-    app.run()
+    import sys
+    if "--window" in sys.argv[1:] or "-w" in sys.argv[1:]:
+        import window
+        window.run_windowed()
+    else:
+        app = GhMail()
+        app._initial_theme = config.load_theme()
+        app.run()

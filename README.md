@@ -64,6 +64,19 @@ or if added to PATH:
 prtui
 ```
 
+### Window mode
+
+Launch prtui in a maximized native desktop window, detached from the terminal:
+
+```
+prtui --window
+```
+
+The UI is served on a random port on `127.0.0.1` only, embedded via
+[textual-serve](https://github.com/Textualize/textual-serve) and
+[pywebview](https://pywebview.flowrl.com/). Requires a local graphical
+desktop (not SSH).
+
 ## Data
 
 PR data is stored in a SQLite database at `/tmp/prtui.db`. Delete it to force a full re-fetch.
