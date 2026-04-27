@@ -98,6 +98,30 @@ HelpScreen {
     width: 1fr;
 }
 
+/* PR info dialog */
+PrInfoScreen {
+    align: center middle;
+}
+#pr-info-dialog {
+    grid-size: 1;
+    grid-rows: auto 1fr auto;
+    grid-gutter: 1;
+    padding: 1 2;
+    width: 72;
+    height: auto;
+    max-height: 90%;
+    border: thick $background 80%;
+    background: $surface;
+}
+#pr-info-title {
+    width: 1fr;
+    text-style: bold;
+    padding-bottom: 1;
+}
+#pr-info-body {
+    width: 1fr;
+}
+
 /* CI warning dialog */
 CiWarningScreen {
     align: center middle;

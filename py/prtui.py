@@ -124,6 +124,7 @@ class HelpScreen(ModalScreen):
                 "  Mrg           Mergeable (✓ = ready, ✗ = conflicts or blocked)\n"
                 "\n"
                 "[b]Other[/b]\n"
+                "  i             PR details (branch info)\n"
                 "  ?             Show this help\n"
                 "  q             Quit",
                 id="help-body",
@@ -133,6 +134,44 @@ class HelpScreen(ModalScreen):
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss()
+
+
+class PrInfoScreen(ModalScreen):
+    """Shows branch and other details for the selected PR."""
+    BINDINGS = [
+        Binding("escape", "dismiss", show=False),
+        Binding("enter", "dismiss", show=False),
+        Binding("i", "dismiss", show=False),
+    ]
+
+    def __init__(self, pr: dict):
+        super().__init__()
+        self._pr = pr
+
+    def compose(self) -> ComposeResult:
+        pr = self._pr
+        head_ref = pr.get("head_ref") or "(unknown)"
+        base_ref = pr.get("base_ref") or "(unknown)"
+        draft = "Yes" if pr.get("draft") else "No"
+        yield Grid(
+            Label(f"#{pr['number']} {pr['title']}", id="pr-info-title"),
+            Label(
+                f"Repo:   {pr['repo']}\n"
+                f"From:   {head_ref}\n"
+                f"To:     {base_ref}\n"
+                f"Author: {pr['author']}\n"
+                f"Draft:  {draft}",
+                id="pr-info-body",
+            ),
+            Button("Close", variant="primary", id="pr-info-close"),
+            id="pr-info-dialog",
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss()
+
+    def action_dismiss(self) -> None:
         self.dismiss()
 
 
@@ -185,6 +224,7 @@ class GhMail(NavigationMixin, App):
         Binding("shift+tab", "focus_prev_table", "Prev Table", show=True),
         Binding("j", "cursor_down", show=False),
         Binding("k", "cursor_up", show=False),
+        Binding("i", "pr_info", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -572,6 +612,14 @@ class GhMail(NavigationMixin, App):
 
     def action_quit(self):
         self.push_screen(QuitScreen(), callback=self._handle_quit)
+
+    def action_pr_info(self) -> None:
+        table = self._focused_table()
+        if table.row_count == 0:
+            return
+        prs = self.prs.get(table.id or "", [])
+        pr = prs[table.cursor_row]
+        self.push_screen(PrInfoScreen(pr))
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
