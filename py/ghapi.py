@@ -44,7 +44,10 @@ def _search_prs(query, pr_type):
             "type": pr_type,
             "draft": item.get("draft", False),
         }
-        for item in _paginate(f"{API}/search/issues", {"q": query, "per_page": 100})
+        for item in _paginate(f"{API}/search/issues",
+                              {"q": query,
+                               "per_page": 100,
+                               "advanced_search": "true"})
     ]
 
 
