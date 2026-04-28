@@ -37,6 +37,8 @@ def read_config():
 def _detect_terminal_theme() -> str:
     """Detect light/dark via OSC 11. Returns a Textual theme name."""
     import sys, termios, tty, select
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return "textual-dark"
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
