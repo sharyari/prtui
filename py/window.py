@@ -23,6 +23,22 @@ def run_windowed() -> None:
     window and blocks until the TUI exits.
     """
     if os.environ.get(_WORKER_ENV) != "1":
+        missing = []
+        try:
+            import webview  # noqa: F401
+        except ImportError:
+            missing.append("pywebview")
+        try:
+            import textual_serve  # noqa: F401
+        except ImportError:
+            missing.append("textual-serve")
+        if missing:
+            print(
+                f"Error: missing package(s): {', '.join(missing)}\n"
+                f"Install with: pip install textual-serve pywebview",
+                file=sys.stderr,
+            )
+            return
         subprocess.Popen(
             [sys.executable, *sys.argv],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
