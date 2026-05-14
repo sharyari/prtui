@@ -222,6 +222,39 @@ def get_commits(pr_number, repo):
     return commits
 
 
+_DASHBOARD = "http://dashboard.tail-f.com"
+
+
+def _get_dashboard_ci_url(branch):
+    """Query the dashboard API for the latest build on the given branch.
+
+    Returns the dashboard build URL for the most recent build (including
+    running ones), or None if unavailable.
+    """
+    try:
+        branch_param = branch if branch.startswith("origin/") else f"origin/{branch}"
+        resp = requests.get(
+            f"{_DASHBOARD}/api/get-branch-data",
+            params={"branch": branch_param, "show_builds_int": 1, "arch": "linux-x86_64"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        builds = resp.json()
+        if builds and isinstance(builds, list) and builds[0].get("build"):
+            build_id = builds[0]["build"]
+            # URL format: /nso/linux-x86_64/origin:user:branch-name/build_id/
+            branch_path = branch_param.replace("/", ":")
+            return f"{_DASHBOARD}/nso/linux-x86_64/{branch_path}/{build_id}/"
+    except Exception:
+        return None
+    return None
+
+
+# Public alias for use by the UI layer.
+get_dashboard_ci_url = _get_dashboard_ci_url
+
+
 def _get_pr_details(pr_number, repo):
     """Fetch mergeable status, CI URL, and SHAs for a PR in one API call sequence.
 
@@ -229,7 +262,6 @@ def _get_pr_details(pr_number, repo):
     if Jenkins hasn't run on the current HEAD (caller should preserve any
     previously stored values).
     """
-    import re
     data = requests.get(f"{API}/repos/{repo}/pulls/{pr_number}", headers=HEADERS)
     data.raise_for_status()
     data = data.json()
@@ -242,30 +274,30 @@ def _get_pr_details(pr_number, repo):
         else:
             mergeable = data.get("mergeable_state") != "blocked"
 
-    # CI URL from commit statuses on the current HEAD
-    # Prefer a pending status (active run) over completed ones.
+    # CI URL — query the dashboard API for the latest build on this branch.
+    # Falls back to GitHub commit statuses if the dashboard is unavailable.
     ci_url = None
     ci_sha = None
     sha = data["head"]["sha"]
-    if _CI_URL_PATTERN:
+    head_ref = data["head"]["ref"]
+
+    # Try dashboard API first — it always has the latest build, including running ones.
+    _dashboard_url = _get_dashboard_ci_url(head_ref)
+    if _dashboard_url:
+        ci_url = _dashboard_url
+        ci_sha = sha
+    elif _CI_URL_PATTERN:
+        import re
         statuses = requests.get(
             f"{API}/repos/{repo}/commits/{sha}/statuses", headers=HEADERS)
         statuses.raise_for_status()
-        pending_url = None
-        completed_url = None
         for s in statuses.json():  # newest first
-            match = re.search(_CI_URL_PATTERN, s.get("target_url", ""))
+            target = s.get("target_url", "")
+            match = re.search(_CI_URL_PATTERN, target)
             if match:
-                if s["state"] == "pending" and pending_url is None:
-                    pending_url = match.group(0)
-                elif s["state"] != "pending" and completed_url is None:
-                    completed_url = match.group(0)
-                if pending_url and completed_url:
-                    break
-        chosen = pending_url or completed_url
-        if chosen:
-            ci_url = chosen
-            ci_sha = sha
+                ci_url = match.group(0)
+                ci_sha = sha
+                break
 
     return (mergeable, ci_url, sha, ci_sha, data.get("draft", False),
             data["head"]["ref"], data["base"]["ref"])

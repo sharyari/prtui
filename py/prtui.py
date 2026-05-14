@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import store
 import ghapi
 import config
+import jenkins
 from navigation import NavigationMixin
 import comments
 import theme_listener
@@ -116,6 +117,7 @@ class HelpScreen(ModalScreen):
                 "  r             Mark PR as read\n"
                 "  b             Open CI build in browser\n"
                 "  t             Open linked ticket in browser\n"
+                "  J             Start Jenkins build\n"
                 "\n"
                 "[b]Columns[/b]\n"
                 "  [red]●[/red] / [dim]●[/dim]         Unread / read\n"
@@ -205,6 +207,60 @@ class CiWarningScreen(ModalScreen):
         self.dismiss()
 
 
+class JenkinsConfirmScreen(ModalScreen[bool]):
+    """Confirm starting a Jenkins build for a PR."""
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("enter", "confirm", show=False),
+        Binding("h", "next", show=False),
+        Binding("l", "next", show=False),
+        Binding("right", "next", show=False),
+        Binding("left", "next", show=False),
+    ]
+
+    def __init__(self, pr_number, head_ref, base_ref):
+        super().__init__()
+        self._pr_number = pr_number
+        self._head_ref = head_ref
+        self._base_ref = base_ref
+
+    def compose(self) -> ComposeResult:
+        job_name = f"jjb_pr_start_linux-64_{self._base_ref}"
+        yield Grid(
+            Label(
+                f"Start Jenkins build?\n\n"
+                f"PR:   #{self._pr_number}\n"
+                f"From: {self._head_ref}\n"
+                f"To:   {self._base_ref}\n"
+                f"Job:  {job_name}",
+                id="jenkins-question"),
+            Button("Start", variant="warning", id="jenkins-start"),
+            Button("Cancel", variant="primary", id="jenkins-cancel"),
+            id="jenkins-dialog",
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "jenkins-start":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_next(self):
+        panel = self.query_one("#jenkins-dialog", Grid)
+        buttons = list(panel.query(Button))
+        node = self.focused
+        if isinstance(node, Button) and node in buttons:
+            idx = buttons.index(node)
+            target = buttons[(idx + 1) % len(buttons)]
+            target.focus()
+
+
 class GhMail(NavigationMixin, App):
     CSS_PATH = "prtui.tcss"
 
@@ -219,6 +275,7 @@ class GhMail(NavigationMixin, App):
         Binding("t", "open_ticket", "Open Ticket"),
         Binding("c", "open_comments", "Open Comments"),
         Binding("u", "refresh_pr", "Refresh PR"),
+        Binding("J", "start_jenkins", "Start Jenkins"),
         Binding("question_mark", "help", "Help"),
         Binding("tab", "focus_next_table", "Next Table", show=True),
         Binding("shift+tab", "focus_prev_table", "Prev Table", show=True),
@@ -560,18 +617,19 @@ class GhMail(NavigationMixin, App):
         if not key:
             return
         repo, number = key
-        url = store.get_ci_url(repo, int(number))
+        table = self._focused_table()
+        pr = self.prs.get(table.id or "", [])[table.cursor_row]
+        # Try the dashboard API for the freshest build URL
+        head_ref = pr.get("head_ref")
+        url = None
+        if isinstance(head_ref, str) and head_ref:
+            url = ghapi.get_dashboard_ci_url(head_ref)
+        if not url:
+            url = store.get_ci_url(repo, int(number))
         if not url:
             self.notify("No CI link found", severity="warning")
             return
-        table = self._focused_table()
-        pr = self.prs.get(table.id or "", [])[table.cursor_row]
-        # Warn if the CI ran on an older commit than the current HEAD
-        if pr.get("head_sha") and pr.get("ci_sha") and pr["head_sha"] != pr["ci_sha"]:
-            self.push_screen(CiWarningScreen(pr["head_sha"], pr["ci_sha"]),
-                             callback=lambda _: webbrowser.open(url))
-        else:
-            webbrowser.open(url)
+        webbrowser.open(url)
 
     def action_open_ticket(self) -> None:
         table = self._focused_table()
@@ -604,6 +662,52 @@ class GhMail(NavigationMixin, App):
             except Exception as e:
                 self.call_from_thread(self.notify, f"Refresh failed: {e}",
                                       severity="error")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def action_start_jenkins(self) -> None:
+        if not jenkins.is_configured():
+            self.notify("Jenkins not configured (need ~/.ghmanager_tokens)",
+                        severity="warning")
+            return
+        table = self._focused_table()
+        if table.row_count == 0:
+            return
+        prs = self.prs.get(table.id or "", [])
+        pr = prs[table.cursor_row]
+        head_ref = pr.get("head_ref")
+        base_ref = pr.get("base_ref")
+        if not head_ref or not base_ref:
+            self.notify("Branch info missing — try refreshing the PR first", severity="warning")
+            return
+        self.push_screen(
+            JenkinsConfirmScreen(pr["number"], head_ref, base_ref),
+            callback=lambda confirmed: self._do_start_jenkins(confirmed, pr),
+        )
+
+    def _do_start_jenkins(self, confirmed, pr) -> None:
+        if not confirmed:
+            return
+        self.notify(f"Starting Jenkins for #{pr['number']}…")
+        def worker():
+            success, msg = jenkins.start_test(
+                pr["number"], pr["repo"], pr["head_ref"], pr["base_ref"],
+            )
+            severity = "information" if success else "error"
+            self.call_from_thread(self.notify, msg, severity=severity)
+            if success:
+                # Refresh the PR so the new pending CI status is picked up
+                import time
+                time.sleep(5)
+                try:
+                    ghapi.refresh_pr(pr["repo"], int(pr["number"]))
+                    self.prs = {
+                        "prs": store.get_pull_requests("mine"),
+                        "reviewer": store.get_pull_requests("reviewer"),
+                        "requested": store.get_pull_requests("requested"),
+                    }
+                    self.call_from_thread(self._populate_tables, True)
+                except Exception:
+                    pass
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_quit(self, confirmed: bool) -> None:
