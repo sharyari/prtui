@@ -278,6 +278,7 @@ def _get_pr_details(pr_number, repo):
     # Falls back to GitHub commit statuses if the dashboard is unavailable.
     ci_url = None
     ci_sha = None
+    ci_state = None
     sha = data["head"]["sha"]
     head_ref = data["head"]["ref"]
 
@@ -299,8 +300,14 @@ def _get_pr_details(pr_number, repo):
                 ci_sha = sha
                 break
 
+    # Fetch combined commit status to determine CI state (pending/success/failure).
+    combined = requests.get(
+        f"{API}/repos/{repo}/commits/{sha}/status", headers=HEADERS)
+    if combined.status_code == 200:
+        ci_state = combined.json().get("state")  # "pending", "success", "failure", "error"
+
     return (mergeable, ci_url, sha, ci_sha, data.get("draft", False),
-            data["head"]["ref"], data["base"]["ref"])
+            data["head"]["ref"], data["base"]["ref"], ci_state)
 
 
 def _fetch_pr_details(pr):
@@ -312,7 +319,7 @@ def _fetch_pr_details(pr):
     pr["approvals"] = ",".join(approvers)
     (pr["mergeable"], pr["ci_url"], pr["head_sha"],
      pr["ci_sha"], pr["draft"],
-     pr["head_ref"], pr["base_ref"]) = _get_pr_details(pr["number"], pr["repo"])
+     pr["head_ref"], pr["base_ref"], pr["ci_state"]) = _get_pr_details(pr["number"], pr["repo"])
     return pr, comments
 
 
@@ -335,6 +342,8 @@ def poll_for_updates(on_progress=None):
         prdb.create_pr_table(cursor)
         prdb.create_comments_table(cursor)
         old = prdb.pr_get_updated_at(cursor)
+        # PRs missing ci_state need re-fetching regardless of updated_at
+        missing_ci = prdb.pr_get_missing_ci_state(cursor)
 
     current_keys = set()
     changed = []
@@ -342,7 +351,7 @@ def poll_for_updates(on_progress=None):
         key = (pr["repo"], pr["number"])
         current_keys.add(key)
         old_ts = old.get(key)
-        if old_ts is None or pr["updated_at"] > old_ts:
+        if old_ts is None or pr["updated_at"] > old_ts or key in missing_ci:
             changed.append(pr)
 
     if _CUSTOM_QUERY:

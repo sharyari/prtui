@@ -471,7 +471,15 @@ class GhMail(NavigationMixin, App):
             table.zebra_stripes = True
             table.add_columns("", "#", "Repo", "Title", "Author", "App", "CI", "Mrg", "Rdy")
             for pr in prs:
-                ci = "✓" if pr["jenkins_approved"] else ""
+                ci_state = pr.get("ci_state") or ""
+                if pr["jenkins_approved"]:
+                    ci = "✓"
+                elif ci_state in ("failure", "error"):
+                    ci = "✗"
+                elif ci_state == "pending":
+                    ci = "◆"
+                else:
+                    ci = ""
                 approvals = str(pr["approval_count"]) if pr["approval_count"] else ""
                 if pr.get("my_approved"):
                     approvals = f"✓ {approvals}".strip()
