@@ -95,16 +95,14 @@ prtui can trigger Jenkins PR pipeline builds directly from the UI.
 
 ### Setup
 
-Credentials are read from `~/.ghmanager_tokens` (the same file used by
-ghmanager). It must contain at least:
+Add your Jenkins API token to the prtui `config` file:
 
 ```
-username:<your-github-username>
-prjenkins:<your-jenkins-api-token>
+jenkins-token:<your-jenkins-api-token>
 ```
 
-The Jenkins username is derived from the `username` field (with `_cisco`
-suffix stripped).
+The Jenkins username is derived automatically from the `username` field
+(with `_cisco` suffix stripped).
 
 ### Usage
 

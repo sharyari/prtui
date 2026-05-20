@@ -2,41 +2,18 @@
 
 import base64
 import urllib.parse
-from pathlib import Path
 import requests
 import config
 
 _cfg = config.read_config()
 _JENKINS_URL = "https://scuti.lab.tail-f.com:8443"
 _USERNAME = _cfg.get("username", "").strip()
+_JENKINS_TOKEN = _cfg.get("jenkins-token", "").strip()
 
-
-def _read_jenkins_credentials():
-    """Read Jenkins username and token from ~/.ghmanager_tokens."""
-    token_path = Path.home() / ".ghmanager_tokens"
-    if not token_path.exists():
-        return None, None
-    jenkins_user = None
-    jenkins_token = None
-    with open(token_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split(":", 1)
-            if len(parts) != 2:
-                continue
-            key, value = parts[0].strip(), parts[1].strip()
-            if key == "username":
-                jenkins_user = value.removesuffix("_cisco")
-                if jenkins_user.endswith("-gen"):
-                    jenkins_user = jenkins_user.replace("-gen", ".gen")
-            elif key == "prjenkins":
-                jenkins_token = value
-    return jenkins_user, jenkins_token
-
-
-_JENKINS_USER, _JENKINS_TOKEN = _read_jenkins_credentials()
+# Derive the Jenkins username from the GitHub username
+_JENKINS_USER = _USERNAME.removesuffix("_cisco")
+if _JENKINS_USER.endswith("-gen"):
+    _JENKINS_USER = _JENKINS_USER.replace("-gen", ".gen")
 
 
 def is_configured():
@@ -79,7 +56,7 @@ def start_test(pr_number, repo, head_ref, base_ref, pr_url=None):
         (success: bool, message: str)
     """
     if not is_configured():
-        return False, "Jenkins not configured (need ~/.ghmanager_tokens with prjenkins token)"
+        return False, "Jenkins not configured (set jenkins-token in config)"
 
     if pr_url is None:
         pr_url = f"https://github.com/{repo}/pull/{pr_number}"
