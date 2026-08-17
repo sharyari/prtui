@@ -47,13 +47,18 @@ def _search_prs(query, pr_type):
         for item in _paginate(f"{API}/search/issues",
                               {"q": query,
                                "per_page": 100,
-                               "advanced_search": "false"})
+                               "advanced_search": "true"})
     ]
 
 
 def _repo_query():
-    """Build the repo: part of a search query."""
-    return " ".join(f"repo:{r}" for r in REPOS)
+    """Build the repo: part of a search query.
+
+    Joins repos with OR so the query matches PRs in any of them.
+    Advanced search treats space-separated repo: qualifiers as AND
+    (which can never match), so the OR grouping is required.
+    """
+    return "(" + " OR ".join(f"repo:{r}" for r in REPOS) + ")"
 
 
 def _fetch_all_prs():
