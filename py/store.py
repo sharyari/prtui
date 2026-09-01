@@ -42,6 +42,7 @@ def get_pull_requests(type):
                 "approval_count": len(others),
                 "jenkins_approved": bool(jenkins),
                 "my_approved": USER in others,
+                "ci_state": pr.get("ci_state"),
             })
         return prs
 

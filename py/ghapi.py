@@ -47,13 +47,18 @@ def _search_prs(query, pr_type):
         for item in _paginate(f"{API}/search/issues",
                               {"q": query,
                                "per_page": 100,
-                               "advanced_search": "false"})
+                               "advanced_search": "true"})
     ]
 
 
 def _repo_query():
-    """Build the repo: part of a search query."""
-    return " ".join(f"repo:{r}" for r in REPOS)
+    """Build the repo: part of a search query.
+
+    Joins repos with OR so the query matches PRs in any of them.
+    Advanced search treats space-separated repo: qualifiers as AND
+    (which can never match), so the OR grouping is required.
+    """
+    return "(" + " OR ".join(f"repo:{r}" for r in REPOS) + ")"
 
 
 def _fetch_all_prs():
@@ -222,6 +227,39 @@ def get_commits(pr_number, repo):
     return commits
 
 
+_DASHBOARD = "http://dashboard.tail-f.com"
+
+
+def _get_dashboard_ci_url(branch):
+    """Query the dashboard API for the latest build on the given branch.
+
+    Returns the dashboard build URL for the most recent build (including
+    running ones), or None if unavailable.
+    """
+    try:
+        branch_param = branch if branch.startswith("origin/") else f"origin/{branch}"
+        resp = requests.get(
+            f"{_DASHBOARD}/api/get-branch-data",
+            params={"branch": branch_param, "show_builds_int": 1, "arch": "linux-x86_64"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        builds = resp.json()
+        if builds and isinstance(builds, list) and builds[0].get("build"):
+            build_id = builds[0]["build"]
+            # URL format: /nso/linux-x86_64/origin:user:branch-name/build_id/
+            branch_path = branch_param.replace("/", ":")
+            return f"{_DASHBOARD}/nso/linux-x86_64/{branch_path}/{build_id}/"
+    except Exception:
+        return None
+    return None
+
+
+# Public alias for use by the UI layer.
+get_dashboard_ci_url = _get_dashboard_ci_url
+
+
 def _get_pr_details(pr_number, repo):
     """Fetch mergeable status, CI URL, and SHAs for a PR in one API call sequence.
 
@@ -229,7 +267,6 @@ def _get_pr_details(pr_number, repo):
     if Jenkins hasn't run on the current HEAD (caller should preserve any
     previously stored values).
     """
-    import re
     data = requests.get(f"{API}/repos/{repo}/pulls/{pr_number}", headers=HEADERS)
     data.raise_for_status()
     data = data.json()
@@ -242,33 +279,40 @@ def _get_pr_details(pr_number, repo):
         else:
             mergeable = data.get("mergeable_state") != "blocked"
 
-    # CI URL from commit statuses on the current HEAD
-    # Prefer a pending status (active run) over completed ones.
+    # CI URL — query the dashboard API for the latest build on this branch.
+    # Falls back to GitHub commit statuses if the dashboard is unavailable.
     ci_url = None
     ci_sha = None
+    ci_state = None
     sha = data["head"]["sha"]
-    if _CI_URL_PATTERN:
+    head_ref = data["head"]["ref"]
+
+    # Try dashboard API first — it always has the latest build, including running ones.
+    _dashboard_url = _get_dashboard_ci_url(head_ref)
+    if _dashboard_url:
+        ci_url = _dashboard_url
+        ci_sha = sha
+    elif _CI_URL_PATTERN:
+        import re
         statuses = requests.get(
             f"{API}/repos/{repo}/commits/{sha}/statuses", headers=HEADERS)
         statuses.raise_for_status()
-        pending_url = None
-        completed_url = None
         for s in statuses.json():  # newest first
-            match = re.search(_CI_URL_PATTERN, s.get("target_url", ""))
+            target = s.get("target_url", "")
+            match = re.search(_CI_URL_PATTERN, target)
             if match:
-                if s["state"] == "pending" and pending_url is None:
-                    pending_url = match.group(0)
-                elif s["state"] != "pending" and completed_url is None:
-                    completed_url = match.group(0)
-                if pending_url and completed_url:
-                    break
-        chosen = pending_url or completed_url
-        if chosen:
-            ci_url = chosen
-            ci_sha = sha
+                ci_url = match.group(0)
+                ci_sha = sha
+                break
+
+    # Fetch combined commit status to determine CI state (pending/success/failure).
+    combined = requests.get(
+        f"{API}/repos/{repo}/commits/{sha}/status", headers=HEADERS)
+    if combined.status_code == 200:
+        ci_state = combined.json().get("state")  # "pending", "success", "failure", "error"
 
     return (mergeable, ci_url, sha, ci_sha, data.get("draft", False),
-            data["head"]["ref"], data["base"]["ref"])
+            data["head"]["ref"], data["base"]["ref"], ci_state)
 
 
 def _fetch_pr_details(pr):
@@ -280,7 +324,7 @@ def _fetch_pr_details(pr):
     pr["approvals"] = ",".join(approvers)
     (pr["mergeable"], pr["ci_url"], pr["head_sha"],
      pr["ci_sha"], pr["draft"],
-     pr["head_ref"], pr["base_ref"]) = _get_pr_details(pr["number"], pr["repo"])
+     pr["head_ref"], pr["base_ref"], pr["ci_state"]) = _get_pr_details(pr["number"], pr["repo"])
     return pr, comments
 
 
@@ -303,6 +347,8 @@ def poll_for_updates(on_progress=None):
         prdb.create_pr_table(cursor)
         prdb.create_comments_table(cursor)
         old = prdb.pr_get_updated_at(cursor)
+        # PRs missing ci_state need re-fetching regardless of updated_at
+        missing_ci = prdb.pr_get_missing_ci_state(cursor)
 
     current_keys = set()
     changed = []
@@ -310,7 +356,7 @@ def poll_for_updates(on_progress=None):
         key = (pr["repo"], pr["number"])
         current_keys.add(key)
         old_ts = old.get(key)
-        if old_ts is None or pr["updated_at"] > old_ts:
+        if old_ts is None or pr["updated_at"] > old_ts or key in missing_ci:
             changed.append(pr)
 
     if _CUSTOM_QUERY:

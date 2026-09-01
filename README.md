@@ -88,3 +88,24 @@ regex configurations can be set in the config.
 
 Ticket: the PR title is scanned and matched against regex
 CI: The latest comment from the CI user is scanned and matched against regex
+
+## Jenkins Integration
+
+prtui can trigger Jenkins PR pipeline builds directly from the UI.
+
+### Setup
+
+Add your Jenkins API token to the prtui `config` file:
+
+```
+jenkins-token:<your-jenkins-api-token>
+```
+
+The Jenkins username is derived automatically from the `username` field
+(with `_cisco` suffix stripped).
+
+### Usage
+
+Press `J` on any PR row to trigger a Jenkins build. A confirmation dialog
+shows the job name and branch details before starting. After a successful
+trigger the PR is automatically refreshed so the CI link updates.

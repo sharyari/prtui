@@ -88,12 +88,17 @@ def create_pr_table(cursor):
         cursor.execute("ALTER TABLE PRS ADD COLUMN base_ref TEXT")
     except Exception:
         pass
+    # Migrate existing DBs that predate the ci_state column.
+    try:
+        cursor.execute("ALTER TABLE PRS ADD COLUMN ci_state TEXT")
+    except Exception:
+        pass
 
 def pr_insert(cursor, pr):
     read_at = pr["updated_at"] if pr["type"] == "mine" else None
     cursor.execute(
-        "INSERT INTO PRS (number, repo, type, author, title, updated_at, read_at, approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO PRS (number, repo, type, author, title, updated_at, read_at, approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref, ci_state)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(repo, number) DO UPDATE SET"
         " type=excluded.type, author=excluded.author,"
         " title=excluded.title, updated_at=excluded.updated_at,"
@@ -104,17 +109,19 @@ def pr_insert(cursor, pr):
         " draft=excluded.draft,"
         " head_ref=excluded.head_ref,"
         " base_ref=excluded.base_ref,"
+        " ci_state=COALESCE(excluded.ci_state, ci_state),"
         " read_at=COALESCE(read_at, excluded.read_at)",
         (pr["number"], pr["repo"], pr["type"], pr["author"],
          pr["title"], pr["updated_at"], read_at, pr.get("approvals", ""),
          pr.get("mergeable"), pr.get("ci_url"), pr.get("head_sha"), pr.get("ci_sha"),
-         int(bool(pr.get("draft"))), pr.get("head_ref"), pr.get("base_ref"))
+         int(bool(pr.get("draft"))), pr.get("head_ref"), pr.get("base_ref"),
+         pr.get("ci_state"))
     )
 
 def pr_get_all(cursor, type):
     cursor.execute(
         "SELECT number, repo, type, author, title, updated_at, read_at,"
-        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref FROM PRS WHERE type=?", (type,)
+        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref, ci_state FROM PRS WHERE type=?", (type,)
     )
     return [dict(r) for r in cursor.fetchall()]
 
@@ -150,6 +157,11 @@ def pr_get_updated_at(cursor):
     """Return {(repo, number): updated_at} for all PRs."""
     cursor.execute("SELECT repo, number, updated_at FROM PRS")
     return {(r["repo"], r["number"]): r["updated_at"] for r in cursor.fetchall()}
+
+def pr_get_missing_ci_state(cursor):
+    """Return set of (repo, number) for PRs with NULL ci_state."""
+    cursor.execute("SELECT repo, number FROM PRS WHERE ci_state IS NULL")
+    return {(r["repo"], r["number"]) for r in cursor.fetchall()}
 
 def pr_delete(cursor, repo, number):
     """Delete a PR and its comments."""
