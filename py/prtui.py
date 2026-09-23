@@ -8,6 +8,7 @@ from textual.binding import Binding
 from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
 from rich.text import Text
+import os
 import threading
 import webbrowser
 import subprocess
@@ -242,6 +243,9 @@ class GhMail(NavigationMixin, App):
         yield Footer()
 
     def on_mount(self) -> None:
+        if os.environ.get("_PRTUI_WINDOW_WORKER") == "1":
+            self._window_parent_pid = os.getppid()
+            self.set_interval(1, self._exit_if_window_parent_gone)
         self._initializing = True
         self.theme = getattr(self, "_initial_theme", "textual-dark")
         self._initializing = False
@@ -260,6 +264,12 @@ class GhMail(NavigationMixin, App):
         theme_listener.start(
             lambda t: self.call_from_thread(setattr, self, "theme", t)
         )
+
+    def _exit_if_window_parent_gone(self) -> None:
+        """Exit a served app if its native-window supervisor has died."""
+        parent_pid = os.getppid()
+        if parent_pid == 1 or parent_pid != self._window_parent_pid:
+            self.exit()
 
     def watch_theme(self, theme: str) -> None:
         if not getattr(self, "_initializing", False):
@@ -321,56 +331,65 @@ class GhMail(NavigationMixin, App):
         threading.Thread(target=worker, daemon=True).start()
 
     def _check_for_update(self) -> None:
-        """Check if a newer version of prtui is available via GitHub API."""
-        import requests as _requests
+        """Check if a newer version exists on the tracked Git upstream."""
         repo_dir = Path(__file__).resolve().parent.parent
         try:
             local = subprocess.run(
                 ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
-            if not local:
-                return
-            branch = subprocess.run(
-                ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+            upstream = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref",
+                 "--symbolic-full-name", "@{upstream}"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
-            if not branch or branch == "HEAD":
+            if not local or "/" not in upstream:
                 return
-            cfg = config.read_config()
-            headers = {
-                "Authorization": f"Bearer {cfg['token']}",
-                "Accept": "application/vnd.github+json",
-            }
-            resp = _requests.get(
-                f"https://api.github.com/repos/sharyari/prtui/commits/{branch}",
-                headers=headers, timeout=10,
-            )
-            if resp.status_code != 200:
-                return
-            remote_sha = resp.json().get("sha", "")
-            if remote_sha and remote_sha != local:
-                if cfg.get("auto-update"):
-                    self._attempt_auto_update(repo_dir)
-                else:
-                    self.call_from_thread(self._show_update_banner, "update available")
+            remote_name, remote_branch = upstream.split("/", 1)
 
+            remote = subprocess.run(
+                ["git", "-C", str(repo_dir), "ls-remote", "--heads",
+                 remote_name, f"refs/heads/{remote_branch}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if remote.returncode != 0 or not remote.stdout.strip():
+                return
+            remote_sha = remote.stdout.split()[0]
+            if remote_sha == local:
+                (repo_dir / "auto-update.log").unlink(missing_ok=True)
+                return
+
+            if config.read_config().get("auto-update"):
+                self._attempt_auto_update(repo_dir, remote_name, remote_branch)
+            else:
+                self.call_from_thread(self._show_update_banner, "update available")
         except Exception as e:
             self.call_from_thread(self.notify, f"Update check failed: {e}",
                                   severity="warning")
 
-    def _attempt_auto_update(self, repo_dir: Path) -> None:
-        """Try git pull; show result in the banner."""
+    def _attempt_auto_update(self, repo_dir: Path, remote: str, branch: str) -> None:
+        """Try a fast-forward pull; only claim success if HEAD changes."""
         log = repo_dir / "auto-update.log"
         try:
+            old_head = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
             result = subprocess.run(
-                ["git", "-C", str(repo_dir), "pull", "--ff-only"],
+                ["git", "-C", str(repo_dir), "pull", "--ff-only", remote, branch],
                 capture_output=True, text=True, timeout=30,
             )
-            if result.returncode == 0:
+            new_head = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if result.returncode == 0 and new_head != old_head:
+                log.unlink(missing_ok=True)
                 self.call_from_thread(
                     self._show_update_banner,
                     "prtui updated — restart to use the new version")
+            elif result.returncode == 0:
+                log.unlink(missing_ok=True)
             else:
                 log.write_text(result.stdout + result.stderr)
                 self.call_from_thread(
