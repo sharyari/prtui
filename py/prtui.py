@@ -618,6 +618,8 @@ class GhMail(NavigationMixin, App):
                     "reviewer": store.get_pull_requests("reviewer"),
                     "requested": store.get_pull_requests("requested"),
                 }
+                if config.read_config().get("custom-query"):
+                    self.prs["custom"] = store.get_pull_requests("custom")
                 self.call_from_thread(self._populate_tables, True)
                 self.call_from_thread(self.notify, f"#{number} refreshed")
             except Exception as e:

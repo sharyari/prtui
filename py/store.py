@@ -9,6 +9,7 @@ JENKINS_USER = _cfg["jenkins-user"]
 USER = _cfg["username"]
 _TICKET_PATTERN = _cfg.get("ticket-pattern", "")
 _TICKET_URL = _cfg.get("ticket-url", "")
+_SHOW_DRAFTS = _cfg["show-drafts"]
 
 
 def has_data():
@@ -26,13 +27,15 @@ def _pr_state(pr):
 
 
 def get_pull_requests(type):
-    """Fetch all PRs from the DB, formatted for presentation."""
+    """Fetch ordered PRs for presentation, respecting draft visibility."""
     if not prdb.db_exists():
         return []
     with prdb.connection() as cursor:
         prdb.create_pr_table(cursor)  # ensures any pending migrations (e.g. new columns) are applied
         prs = []
         for pr in prdb.pr_get_all(cursor, type):
+            if pr["draft"] and not _SHOW_DRAFTS:
+                continue
             names = [n for n in (pr["approvals"] or "").split(",") if n]
             jenkins = [n for n in names if n == JENKINS_USER]
             others = [n for n in names if n != JENKINS_USER]

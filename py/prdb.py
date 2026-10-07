@@ -114,7 +114,8 @@ def pr_insert(cursor, pr):
 def pr_get_all(cursor, type):
     cursor.execute(
         "SELECT number, repo, type, author, title, updated_at, read_at,"
-        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref FROM PRS WHERE type=?", (type,)
+        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref FROM PRS WHERE type=?"
+        " ORDER BY draft, updated_at DESC", (type,)
     )
     return [dict(r) for r in cursor.fetchall()]
 
