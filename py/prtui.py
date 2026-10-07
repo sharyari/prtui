@@ -120,6 +120,7 @@ class HelpScreen(ModalScreen):
                 "\n"
                 "[b]Columns[/b]\n"
                 "  [red]●[/red] / [dim]●[/dim]         Unread / read\n"
+                "  Stack         Stack number and PR position / total\n"
                 "  Rdy           Ready for review (✓ = non-draft)\n"
                 "  CI            Jenkins approved\n"
                 "  App           Number of human approvals (✓ = you approved)\n"
@@ -421,9 +422,11 @@ class GhMail(NavigationMixin, App):
             except Exception:
                 pass
 
-        # Fixed columns: ●(1) + #(5) + Repo(16) + Author(15) + Rdy(3) + CI(2) + App(4) + Mrg(3)
-        # + column padding (9 cols × 2) + border/padding (4) ≈ 71
-        title_width = max(20, self.size.width - 74)
+        stack_width = max([len("Stack")] + [
+            len(pr.get("stack") or "")
+            for prs in self.prs.values() for pr in prs
+        ])
+        title_width = max(20, self.size.width - 74 - stack_width - 2)
 
         cfg = config.read_config()
         repo_name_map = cfg.get("repo-name-map")
@@ -433,7 +436,8 @@ class GhMail(NavigationMixin, App):
             table.cursor_type = "row"
             table.cursor_foreground_priority = "renderable"
             table.zebra_stripes = True
-            table.add_columns("", "#", "Repo", "Title", "Author", "Rdy", "CI", "App", "Mrg")
+            table.add_columns("", "#", "Repo", "Title", "Author", "Stack",
+                              "Rdy", "CI", "App", "Mrg")
             for pr in prs:
                 ci = "✓" if pr["jenkins_approved"] else ""
                 approvals = str(pr["approval_count"]) if pr["approval_count"] else ""
@@ -449,13 +453,14 @@ class GhMail(NavigationMixin, App):
                     repo_name_map.get(pr["repo"], pr["repo"]),
                     pr["title"][:title_width] + ("…" if len(pr["title"]) > title_width else ""),
                     pr["author"][:15] + ("…" if len(pr["author"]) > 15 else ""),
+                    pr.get("stack") or "",
                     ready,
                     ci,
                     approvals,
                     mrg,
                 ]
                 row_cells = [Text(c, style=style) for c in cells]
-                for cell in row_cells[4:]:
+                for cell in row_cells[5:]:
                     if cell.plain.startswith("✓"):
                         cell.stylize("green", 0, 1)
                 table.add_row(
