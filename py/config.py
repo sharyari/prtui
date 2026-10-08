@@ -30,6 +30,7 @@ def read_config():
     cfg["repo-name-map"] = repo_name_map
     cfg["jenkins-user"] = cfg.get("jenkins-user", "")
     cfg["auto-update"] = cfg.get("auto-update", "false").strip().lower() != "false"
+    cfg["show-drafts"] = cfg.get("show-drafts", "true").strip().lower() != "false"
 
     return cfg
 

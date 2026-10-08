@@ -56,6 +56,26 @@ def _repo_query():
     return " ".join(f"repo:{r}" for r in REPOS)
 
 
+def _stack_label(stack):
+    """Format GitHub's stack number, position, and size for display."""
+    if not stack:
+        return ""
+    return f"#{stack['number']} ({stack['position']}/{stack['size']})"
+
+
+def _get_stack_labels(repo):
+    """Fetch current stack membership for all PRs in a repository."""
+    labels = {}
+    for stack in _paginate(f"{API}/repos/{repo}/stacks"):
+        members = stack["pull_requests"]
+        for position, pr in enumerate(members, 1):
+            labels[pr["number"]] = _stack_label({
+                "number": stack["number"], "position": position,
+                "size": len(members),
+            })
+    return labels
+
+
 def _fetch_all_prs():
     """Fetch and classify all PRs in parallel.
 
@@ -223,11 +243,10 @@ def get_commits(pr_number, repo):
 
 
 def _get_pr_details(pr_number, repo):
-    """Fetch mergeable status, CI URL, and SHAs for a PR in one API call sequence.
+    """Fetch mergeability, CI details, branches, draft status, and stack info.
 
-    Returns (mergeable, ci_url, head_sha, ci_sha) where ci_url/ci_sha are None
-    if Jenkins hasn't run on the current HEAD (caller should preserve any
-    previously stored values).
+    Returns (mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref,
+    stack). CI URL/SHA are None if Jenkins hasn't run on the current HEAD.
     """
     import re
     data = requests.get(f"{API}/repos/{repo}/pulls/{pr_number}", headers=HEADERS)
@@ -268,7 +287,8 @@ def _get_pr_details(pr_number, repo):
             ci_sha = sha
 
     return (mergeable, ci_url, sha, ci_sha, data.get("draft", False),
-            data["head"]["ref"], data["base"]["ref"])
+            data["head"]["ref"], data["base"]["ref"],
+            _stack_label(data.get("stack")))
 
 
 def _fetch_pr_details(pr):
@@ -280,7 +300,8 @@ def _fetch_pr_details(pr):
     pr["approvals"] = ",".join(approvers)
     (pr["mergeable"], pr["ci_url"], pr["head_sha"],
      pr["ci_sha"], pr["draft"],
-     pr["head_ref"], pr["base_ref"]) = _get_pr_details(pr["number"], pr["repo"])
+     pr["head_ref"], pr["base_ref"],
+     pr["stack"]) = _get_pr_details(pr["number"], pr["repo"])
     return pr, comments
 
 
@@ -291,6 +312,8 @@ def poll_for_updates(on_progress=None):
     re-fetches details only for changed PRs, and removes stale ones.
     Returns True if anything changed.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     def progress(msg):
         if on_progress:
             on_progress(msg)
@@ -303,6 +326,9 @@ def poll_for_updates(on_progress=None):
         prdb.create_pr_table(cursor)
         prdb.create_comments_table(cursor)
         old = prdb.pr_get_updated_at(cursor)
+        cursor.execute("SELECT repo, number, stack FROM PRS")
+        old_stacks = {(row["repo"], row["number"]): row["stack"]
+                      for row in cursor.fetchall()}
 
     current_keys = set()
     changed = []
@@ -319,18 +345,30 @@ def poll_for_updates(on_progress=None):
             key = (pr["repo"], pr["number"])
             current_keys.add(key)
             if key not in main_keys:
+                prs.append(pr)
                 old_ts = old.get(key)
                 if old_ts is None or pr["updated_at"] > old_ts:
                     changed.append(pr)
 
     stale = set(old.keys()) - current_keys
 
-    if not changed and not stale:
+    # Stack sizes/positions can change without a PR's updated_at changing.
+    repos = sorted({pr["repo"] for pr in prs})
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        stacks = dict(zip(repos, pool.map(_get_stack_labels, repos)))
+    changed_keys = {(pr["repo"], pr["number"]) for pr in changed}
+    stack_updates = {}
+    for pr in prs:
+        key = (pr["repo"], pr["number"])
+        label = stacks[pr["repo"]].get(pr["number"], "")
+        if key not in changed_keys and old_stacks.get(key, "") != label:
+            stack_updates[key] = label
+
+    if not changed and not stale and not stack_updates:
         progress("No changes")
         return False
 
     # Fetch details only for changed PRs
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     comments = []
     done = 0
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -346,10 +384,14 @@ def poll_for_updates(on_progress=None):
             prdb.pr_insert(cursor, pr)
         for comment in comments:
             prdb.comment_insert(cursor, comment)
+        for (repo, number), label in stack_updates.items():
+            cursor.execute("UPDATE PRS SET stack=? WHERE repo=? AND number=?",
+                           (label, repo, number))
         for repo, number in stale:
             prdb.pr_delete(cursor, repo, number)
 
-    progress(f"Updated {len(changed)}, removed {len(stale)}")
+    updated_count = len(changed) + len(stack_updates)
+    progress(f"Updated {updated_count}, removed {len(stale)}")
     return True
 
 

@@ -22,6 +22,7 @@ pr_table_creation_query = """
         draft INT DEFAULT 0,
         head_ref TEXT,
         base_ref TEXT,
+        stack TEXT DEFAULT '',
         PRIMARY KEY(repo, number)
     );
 """
@@ -89,11 +90,17 @@ def create_pr_table(cursor):
     except Exception:
         pass
 
+    # Migrate existing DBs that predate stack information.
+    try:
+        cursor.execute("ALTER TABLE PRS ADD COLUMN stack TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
 def pr_insert(cursor, pr):
     read_at = pr["updated_at"] if pr["type"] == "mine" else None
     cursor.execute(
-        "INSERT INTO PRS (number, repo, type, author, title, updated_at, read_at, approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO PRS (number, repo, type, author, title, updated_at, read_at, approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref, stack)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(repo, number) DO UPDATE SET"
         " type=excluded.type, author=excluded.author,"
         " title=excluded.title, updated_at=excluded.updated_at,"
@@ -104,17 +111,20 @@ def pr_insert(cursor, pr):
         " draft=excluded.draft,"
         " head_ref=excluded.head_ref,"
         " base_ref=excluded.base_ref,"
+        " stack=excluded.stack,"
         " read_at=COALESCE(read_at, excluded.read_at)",
         (pr["number"], pr["repo"], pr["type"], pr["author"],
          pr["title"], pr["updated_at"], read_at, pr.get("approvals", ""),
          pr.get("mergeable"), pr.get("ci_url"), pr.get("head_sha"), pr.get("ci_sha"),
-         int(bool(pr.get("draft"))), pr.get("head_ref"), pr.get("base_ref"))
+         int(bool(pr.get("draft"))), pr.get("head_ref"), pr.get("base_ref"),
+         pr.get("stack", ""))
     )
 
 def pr_get_all(cursor, type):
     cursor.execute(
         "SELECT number, repo, type, author, title, updated_at, read_at,"
-        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref FROM PRS WHERE type=?", (type,)
+        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref, stack FROM PRS WHERE type=?"
+        " ORDER BY draft, updated_at DESC", (type,)
     )
     return [dict(r) for r in cursor.fetchall()]
 

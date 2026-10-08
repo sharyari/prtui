@@ -120,9 +120,11 @@ class HelpScreen(ModalScreen):
                 "\n"
                 "[b]Columns[/b]\n"
                 "  [red]●[/red] / [dim]●[/dim]         Unread / read\n"
-                "  App           Number of human approvals (✓ = you approved)\n"
+                "  Stack         Stack number and PR position / total\n"
+                "  Rdy           Ready for review (✓ = non-draft)\n"
                 "  CI            Jenkins approved\n"
-                "  Mrg           Mergeable (✓ = ready, ✗ = conflicts or blocked)\n"
+                "  App           Number of human approvals (✓ = you approved)\n"
+                "  Mrg           Mergeable (✓ = ready)\n"
                 "\n"
                 "[b]Other[/b]\n"
                 "  i             PR details (branch info)\n"
@@ -420,9 +422,11 @@ class GhMail(NavigationMixin, App):
             except Exception:
                 pass
 
-        # Fixed columns: ●(1) + #(5) + Repo(16) + Author(15) + App(4) + CI(2) + Mrg(3)
-        # + column padding (8 cols × 2) + border/padding (4) ≈ 62
-        title_width = max(20, self.size.width - 74)
+        stack_width = max([len("Stack")] + [
+            len(pr.get("stack") or "")
+            for prs in self.prs.values() for pr in prs
+        ])
+        title_width = max(20, self.size.width - 74 - stack_width - 2)
 
         cfg = config.read_config()
         repo_name_map = cfg.get("repo-name-map")
@@ -430,15 +434,17 @@ class GhMail(NavigationMixin, App):
             table = self.query_one(f"#{table_id}", DataTable)
             table.clear(columns=True)
             table.cursor_type = "row"
+            table.cursor_foreground_priority = "renderable"
             table.zebra_stripes = True
-            table.add_columns("", "#", "Repo", "Title", "Author", "App", "CI", "Mrg", "Rdy")
+            table.add_columns("", "#", "Repo", "Title", "Author", "Stack",
+                              "Rdy", "CI", "App", "Mrg")
             for pr in prs:
                 ci = "✓" if pr["jenkins_approved"] else ""
                 approvals = str(pr["approval_count"]) if pr["approval_count"] else ""
                 if pr.get("my_approved"):
                     approvals = f"✓ {approvals}".strip()
-                mrg = {1: "✓", 0: "✗"}.get(pr.get("mergeable"), "")
-                draft = "✗" if pr.get("draft") else "✓"
+                mrg = "✓" if pr.get("mergeable") else ""
+                ready = "" if pr.get("draft") else "✓"
                 style = "dim" if pr["state"] == "read" else ""
                 state_text = Text(STATE_DISPLAY[pr["state"]],
                                   style="dim" if pr["state"] == "read" else "red")
@@ -447,14 +453,19 @@ class GhMail(NavigationMixin, App):
                     repo_name_map.get(pr["repo"], pr["repo"]),
                     pr["title"][:title_width] + ("…" if len(pr["title"]) > title_width else ""),
                     pr["author"][:15] + ("…" if len(pr["author"]) > 15 else ""),
-                    approvals,
+                    pr.get("stack") or "",
+                    ready,
                     ci,
+                    approvals,
                     mrg,
-                    draft,
                 ]
+                row_cells = [Text(c, style=style) for c in cells]
+                for cell in row_cells[5:]:
+                    if cell.plain.startswith("✓"):
+                        cell.stylize("green", 0, 1)
                 table.add_row(
                     state_text,
-                    *(Text(c, style=style) for c in cells),
+                    *row_cells,
                     key=f"{pr['repo']}#{pr['number']}",
                 )
 
@@ -537,8 +548,9 @@ class GhMail(NavigationMixin, App):
         table.update_cell_at(Coordinate(row, STATE_COL), Text(STATE_DISPLAY["read"], style="dim"))
         # Dim the entire row
         for col in range(len(table.columns)):
-            val = table.get_cell_at(Coordinate(row, col))
-            table.update_cell_at(Coordinate(row, col), Text(str(val), style="dim"))
+            val = table.get_cell_at(Coordinate(row, col)).copy()
+            val.stylize("dim")
+            table.update_cell_at(Coordinate(row, col), val)
 
     def _show_comments(self) -> None:
         key = self._selected_pr_key()
@@ -618,6 +630,8 @@ class GhMail(NavigationMixin, App):
                     "reviewer": store.get_pull_requests("reviewer"),
                     "requested": store.get_pull_requests("requested"),
                 }
+                if config.read_config().get("custom-query"):
+                    self.prs["custom"] = store.get_pull_requests("custom")
                 self.call_from_thread(self._populate_tables, True)
                 self.call_from_thread(self.notify, f"#{number} refreshed")
             except Exception as e:
