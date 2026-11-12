@@ -66,11 +66,16 @@ prtui
 
 ### Window mode
 
-Launch prtui in a maximized native desktop window, detached from the terminal:
+Launch prtui in a native desktop window, detached from the terminal:
 
 ```
 prtui --window
 ```
+
+The window remembers its size, position, and screen between launches. The first
+launch is maximized. If the previous screen is unavailable, the window is fitted
+onto an available screen. Window geometry is saved in `.window-state.json` in the
+project root; delete that file to reset it.
 
 The UI is served on a random port on `127.0.0.1` only, embedded via
 [textual-serve](https://github.com/Textualize/textual-serve) and

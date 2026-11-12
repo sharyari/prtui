@@ -6,6 +6,7 @@ __pycache__/
 # Project specific
 config
 AGENTS.md
+.window-state.json
 
 # C extensions
 *.so
