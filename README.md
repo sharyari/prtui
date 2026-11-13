@@ -86,6 +86,15 @@ desktop (not SSH).
 
 PR data is stored in a SQLite database at `/tmp/prtui.db`. Delete it to force a full re-fetch.
 
+## Tests
+
+Unit tests live in `tests/` and use the standard library `unittest`. Run them
+from the repo root with the venv active:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 
 ## Configuration
 In order to have working quick links to CI and ticketing system, optional
@@ -93,3 +102,16 @@ regex configurations can be set in the config.
 
 Ticket: the PR title is scanned and matched against regex
 CI: The latest comment from the CI user is scanned and matched against regex
+
+`team` must include the org (`<org>/<team-slug>`); prtui refuses to start
+otherwise.
+
+An optional fourth table can be added with a raw
+[GitHub search query](https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests).
+The query is used as-is, so add `is:open`, `repo:` etc. yourself. PRs already
+shown in one of the other tables are not repeated in it.
+
+```
+custom-query:is:pr is:open mentions:@me
+custom-query-label:Mentions
+```
