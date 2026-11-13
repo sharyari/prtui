@@ -234,10 +234,9 @@ class GhMail(NavigationMixin, App):
         yield Header()
         yield LoadingIndicator()
         yield Vertical(
-            Vertical(DataTable(id="prs"), id="group-prs", classes="table-group"),
-            Vertical(DataTable(id="reviewer"), id="group-reviewer", classes="table-group"),
-            Vertical(DataTable(id="requested"), id="group-requested", classes="table-group"),
-            Vertical(DataTable(id="custom"), id="group-custom", classes="table-group"),
+            *(Vertical(DataTable(id=table_id), id=f"group-{table_id}",
+                       classes="table-group")
+              for table_id, _, _, _ in ghapi.sections()),
             id="tables",
         )
         yield CommentsPanel(id="comments")
@@ -251,15 +250,8 @@ class GhMail(NavigationMixin, App):
         self._initializing = True
         self.theme = getattr(self, "_initial_theme", "textual-dark")
         self._initializing = False
-        self.query_one("#group-prs").border_title = "My PRs"
-        self.query_one("#group-reviewer").border_title = "Reviewing"
-        self.query_one("#group-requested").border_title = "Team Requested"
-        _cq = config.read_config().get("custom-query", "")
-        if _cq:
-            _label = config.read_config().get("custom-query-label", "Custom")
-            self.query_one("#group-custom").border_title = _label
-        else:
-            self.query_one("#group-custom").display = False
+        for table_id, _, title, _ in ghapi.sections():
+            self.query_one(f"#group-{table_id}").border_title = title
         self.watch(self.screen, "focused", self._on_screen_focused)
         threading.Thread(target=self._fetch_worker, daemon=True).start()
         self.set_interval(POLL_INTERVAL, self._poll_updates)
@@ -289,13 +281,7 @@ class GhMail(NavigationMixin, App):
                     )
                 finally:
                     self.call_from_thread(self._show_loading, False)
-            self.prs = {
-                "prs": store.get_pull_requests("mine"),
-                "reviewer": store.get_pull_requests("reviewer"),
-                "requested": store.get_pull_requests("requested"),
-            }
-            if config.read_config().get("custom-query"):
-                self.prs["custom"] = store.get_pull_requests("custom")
+            self.prs = self._load_prs()
             self.call_from_thread(self._populate_tables)
             # Immediate poll after initial render
             self._do_poll(preserve_focus=True)
@@ -304,19 +290,19 @@ class GhMail(NavigationMixin, App):
             self.call_from_thread(self.notify, f"Fetch failed: {e}",
                                   severity="error")
 
+    @staticmethod
+    def _load_prs():
+        """Load PRs from the DB, keyed by table id."""
+        return {table_id: store.get_pull_requests(pr_type)
+                for table_id, pr_type, _, _ in ghapi.sections()}
+
     def _do_poll(self, preserve_focus=False):
         """Run a poll and refresh tables from DB (always reloads to catch changes from other instances)."""
         ghapi.poll_for_updates(
             on_progress=lambda msg: self.call_from_thread(
                 self.notify, msg)
         )
-        new_prs = {
-            "prs": store.get_pull_requests("mine"),
-            "reviewer": store.get_pull_requests("reviewer"),
-            "requested": store.get_pull_requests("requested"),
-        }
-        if config.read_config().get("custom-query"):
-            new_prs["custom"] = store.get_pull_requests("custom")
+        new_prs = self._load_prs()
         if new_prs != self.prs:
             self.prs = new_prs
             self.call_from_thread(self._populate_tables, preserve_focus)
@@ -625,13 +611,7 @@ class GhMail(NavigationMixin, App):
         def worker():
             try:
                 ghapi.refresh_pr(repo, int(number))
-                self.prs = {
-                    "prs": store.get_pull_requests("mine"),
-                    "reviewer": store.get_pull_requests("reviewer"),
-                    "requested": store.get_pull_requests("requested"),
-                }
-                if config.read_config().get("custom-query"):
-                    self.prs["custom"] = store.get_pull_requests("custom")
+                self.prs = self._load_prs()
                 self.call_from_thread(self._populate_tables, True)
                 self.call_from_thread(self.notify, f"#{number} refreshed")
             except Exception as e:

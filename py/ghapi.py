@@ -15,6 +15,9 @@ HEADERS = {
 REPOS = _cfg["repos"]
 USER = _cfg["username"]
 TEAM = _cfg.get("team", "")
+# team-review-requested needs the org; a bare slug silently matches nothing.
+if TEAM and (TEAM.count("/") != 1 or "" in TEAM.split("/")):
+    raise SystemExit(f"config: team must be <org>/<team-slug>, got '{TEAM}'")
 _CI_URL_PATTERN = _cfg.get("ci-url-pattern", "")
 _CUSTOM_QUERY = _cfg.get("custom-query", "")
 
@@ -76,68 +79,39 @@ def _get_stack_labels(repo):
     return labels
 
 
-def _fetch_all_prs():
-    """Fetch and classify all PRs in parallel.
+def sections():
+    """Return (table id, PR type, title, search queries) for each PR table.
 
-    Runs the three search queries concurrently, then classifies
-    requested PRs via the requested_reviewers endpoint.
-    Returns (mine, reviewer, requested) lists.
+    Listed in priority order: a PR matched by several sections belongs to
+    the first one.
     """
-    from concurrent.futures import ThreadPoolExecutor
-    rq = _repo_query()
-    queries = [
-        (f"{rq} type:pr state:open author:{USER}", "mine"),
-        (f"{rq} type:pr state:open reviewed-by:{USER} -author:{USER}", "reviewer"),
-        (f"{rq} type:pr state:open review-requested:{USER} -author:{USER}", "requested"),
+    base = f"{_repo_query()} type:pr state:open"
+    result = [
+        ("prs", "mine", "My PRs", [f"{base} author:{USER}"]),
+        ("reviewer", "reviewer", "Reviewing", [
+            f"{base} reviewed-by:{USER} -author:{USER}",
+            # user-review-requested only accepts @me, i.e. the token's user.
+            f"{base} user-review-requested:@me -author:{USER}",
+        ]),
+        ("requested", "requested", "Team Requested",
+         [f"{base} team-review-requested:{TEAM} -author:{USER}"]
+         if TEAM else []),
     ]
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        results = list(pool.map(lambda q: _search_prs(*q), queries))
-
-    mine_prs = results[0]
-    reviewed_prs = results[1]
-    requested_raw = results[2]
-
-    # Deduplicate: reviewed-by may overlap with review-requested
-    seen = {(pr["repo"], pr["number"]) for pr in reviewed_prs}
-    candidates = [pr for pr in requested_raw
-                  if (pr["repo"], pr["number"]) not in seen]
-
-    # Classify requested PRs via endpoint
-    slug = _team_slug()
-    reviewer_prs = list(reviewed_prs)
-    requested_prs = []
-
-    def _classify(pr):
-        users, teams = _get_requested_reviewers(pr["number"], pr["repo"])
-        return pr, users, teams
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for pr, users, teams in pool.map(_classify, candidates):
-            if USER in users:
-                pr["type"] = "reviewer"
-                reviewer_prs.append(pr)
-            elif slug in teams:
-                pr["type"] = "requested"
-                requested_prs.append(pr)
-
-    return mine_prs, reviewer_prs, requested_prs
+    if _CUSTOM_QUERY:
+        result.append(("custom", "custom",
+                       _cfg.get("custom-query-label", "Custom"),
+                       [_CUSTOM_QUERY]))
+    return result
 
 
-def _get_requested_reviewers(pr_number, repo):
-    """Fetch requested reviewers for a PR (users and teams)."""
-    url = f"{API}/repos/{repo}/pulls/{pr_number}/requested_reviewers"
-    resp = requests.get(url, headers=HEADERS)
-    resp.raise_for_status()
-    data = resp.json()
-    users = {u["login"] for u in data.get("users", [])}
-    teams = {t["slug"] for t in data.get("teams", [])}
-    return users, teams
-
-
-def _team_slug():
-    """Extract the slug (part after /) from the full team name."""
-    return TEAM.split("/", 1)[1] if "/" in TEAM else TEAM
+def _fetch_all_prs():
+    """Run all section queries in parallel; one PR list per query."""
+    from concurrent.futures import ThreadPoolExecutor
+    queries = [(query, pr_type)
+               for _, pr_type, _, section_queries in sections()
+               for query in section_queries]
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+        return list(pool.map(lambda q: _search_prs(*q), queries))
 
 
 # Map GitHub review states to comment types for display.
@@ -319,8 +293,7 @@ def poll_for_updates(on_progress=None):
             on_progress(msg)
 
     progress("Polling PRs...")
-    mine_prs, reviewer_prs, requested_prs = _fetch_all_prs()
-    prs = mine_prs + reviewer_prs + requested_prs
+    results = _fetch_all_prs()
 
     with prdb.connection() as cursor:
         prdb.create_pr_table(cursor)
@@ -330,25 +303,19 @@ def poll_for_updates(on_progress=None):
         old_stacks = {(row["repo"], row["number"]): row["stack"]
                       for row in cursor.fetchall()}
 
+    # A PR is stored with a single type, so the first section listing it wins.
     current_keys = set()
+    prs = []
     changed = []
-    for pr in prs:
+    for pr in (pr for result in results for pr in result):
         key = (pr["repo"], pr["number"])
+        if key in current_keys:
+            continue
         current_keys.add(key)
+        prs.append(pr)
         old_ts = old.get(key)
         if old_ts is None or pr["updated_at"] > old_ts:
             changed.append(pr)
-
-    if _CUSTOM_QUERY:
-        main_keys = set(current_keys)
-        for pr in _search_prs(_CUSTOM_QUERY, "custom"):
-            key = (pr["repo"], pr["number"])
-            current_keys.add(key)
-            if key not in main_keys:
-                prs.append(pr)
-                old_ts = old.get(key)
-                if old_ts is None or pr["updated_at"] > old_ts:
-                    changed.append(pr)
 
     stale = set(old.keys()) - current_keys
 
