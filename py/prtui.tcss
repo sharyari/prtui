@@ -28,6 +28,9 @@ DataTable:focus > .datatable--cursor {
     background: $accent;
     color: $text;
 }
+PrTable > .datatable--cursor-row {
+    background: $accent 30%;
+}
 .table-group {
     height: 1fr;
     border: round $accent;

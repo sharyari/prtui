@@ -5,10 +5,9 @@ from textual.widgets import Header, Footer, DataTable, LoadingIndicator
 from textual.widgets import Label, Button
 from textual.containers import Vertical, VerticalScroll, Grid
 from textual.binding import Binding
-from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
-from rich.text import Text
 import os
+import sys
 import threading
 import webbrowser
 import subprocess
@@ -18,25 +17,12 @@ import store
 import ghapi
 import config
 from navigation import NavigationMixin
+from prtable import PrTable, COLUMNS
 import comments
 import theme_listener
 
-STATE_COL = 0
 POLL_INTERVAL = int(config.read_config().get("poll-interval", 120))
 
-STATE_DISPLAY = {
-    "unread": "●",
-    "read": "●",
-}
-BRANCH_MAX_WIDTH = 20
-COLUMNS = ["#", "Repo", "Target", "Source", "Title", "Author", "Stack",
-           "Rdy", "CI", "App", "Mrg"]
-CHECK_COLUMNS = {"Rdy", "CI", "App", "Mrg"}
-
-
-def _visible_columns():
-    excluded = config.read_config()["exclude-columns"]
-    return [c for c in COLUMNS if c.lower() not in excluded]
 
 class CommentsPanel(VerticalScroll):
     """Scrollable panel for PR comments with its own key bindings."""
@@ -45,6 +31,9 @@ class CommentsPanel(VerticalScroll):
         Binding("escape", "close_comments", "Close", priority=True),
         Binding("j", "focus_next_table", show=False),
         Binding("k", "focus_prev_table", show=False),
+        Binding("h", "noop", show=False),
+        Binding("l", "noop", show=False),
+        Binding("y", "noop", show=False),
         Binding("down", "focus_next_table", show=False, priority=True),
         Binding("up", "focus_prev_table", show=False, priority=True),
         # Shadow app bindings that don't apply here
@@ -117,6 +106,7 @@ class HelpScreen(ModalScreen):
             Label(
                 "[b]Navigation[/b]\n"
                 "  j / k         Move cursor down / up\n"
+                "  h / l         Move cursor left / right\n"
                 "  Tab           Focus next table\n"
                 "  Shift+Tab     Focus previous table\n"
                 "\n"
@@ -126,6 +116,7 @@ class HelpScreen(ModalScreen):
                 "  r             Mark PR as read\n"
                 "  b             Open CI build in browser\n"
                 "  t             Open linked ticket in browser\n"
+                "  y / dbl-click Copy cell under cursor\n"
                 "\n"
                 "[b]Columns[/b]\n"
                 "  [red]●[/red] / [dim]●[/dim]         Unread / read\n"
@@ -238,14 +229,17 @@ class GhMail(NavigationMixin, App):
         Binding("shift+tab", "focus_prev_table", "Prev Table", show=True),
         Binding("j", "cursor_down", show=False),
         Binding("k", "cursor_up", show=False),
+        Binding("h", "cursor_left", show=False),
+        Binding("l", "cursor_right", show=False),
         Binding("i", "pr_info", show=False),
+        Binding("y", "copy_cell", show=False),
     ]
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield LoadingIndicator()
         yield Vertical(
-            *(Vertical(DataTable(id=table_id), id=f"group-{table_id}",
+            *(Vertical(PrTable(id=table_id), id=f"group-{table_id}",
                        classes="table-group")
               for table_id, _, _, _ in ghapi.sections()),
             id="tables",
@@ -416,76 +410,19 @@ class GhMail(NavigationMixin, App):
         # Save focus state before clearing
         focused_id = None
         focused_row = 0
+        focused_column = 0
         if preserve_focus:
             try:
                 table = self._focused_table()
                 focused_id = table.id
                 focused_row = table.cursor_row
+                focused_column = table.cursor_column
             except Exception:
                 pass
 
-        stack_width = max([len("Stack")] + [
-            len(pr.get("stack") or "")
-            for prs in self.prs.values() for pr in prs
-        ])
-        target_width = min(BRANCH_MAX_WIDTH, max([len("Target")] + [
-            len(pr.get("base_ref") or "")
-            for prs in self.prs.values() for pr in prs
-        ]))
-        source_width = min(BRANCH_MAX_WIDTH, max([len("Source")] + [
-            len(pr.get("head_ref") or "")
-            for prs in self.prs.values() for pr in prs
-        ]))
-        columns = _visible_columns()
-        title_width = max(20, (screen_width or self.size.width) - 74 - sum(
-            width + 2 for column, width in (("Stack", stack_width),
-                                            ("Target", target_width),
-                                            ("Source", source_width))
-            if column in columns))
-
-        cfg = config.read_config()
-        repo_name_map = cfg.get("repo-name-map")
+        screen_width = screen_width or self.size.width
         for table_id, prs in self.prs.items():
-            table = self.query_one(f"#{table_id}", DataTable)
-            table.clear(columns=True)
-            table.cursor_type = "row"
-            table.cursor_foreground_priority = "renderable"
-            table.zebra_stripes = True
-            table.add_columns("", *columns)
-            for pr in prs:
-                ci = "✓" if pr["jenkins_approved"] else ""
-                approvals = str(pr["approval_count"]) if pr["approval_count"] else ""
-                if pr.get("my_approved"):
-                    approvals = f"✓ {approvals}".strip()
-                mrg = "✓" if pr.get("mergeable") else ""
-                ready = "" if pr.get("draft") else "✓"
-                style = "dim" if pr["state"] == "read" else ""
-                state_text = Text(STATE_DISPLAY[pr["state"]],
-                                  style="dim" if pr["state"] == "read" else "red")
-                target = pr.get("base_ref") or ""
-                source = pr.get("head_ref") or ""
-                cells = {
-                    "#": str(pr["number"]),
-                    "Repo": repo_name_map.get(pr["repo"], pr["repo"]),
-                    "Target": target[:target_width] + ("…" if len(target) > target_width else ""),
-                    "Source": source[:source_width] + ("…" if len(source) > source_width else ""),
-                    "Title": pr["title"][:title_width] + ("…" if len(pr["title"]) > title_width else ""),
-                    "Author": pr["author"][:15] + ("…" if len(pr["author"]) > 15 else ""),
-                    "Stack": pr.get("stack") or "",
-                    "Rdy": ready,
-                    "CI": ci,
-                    "App": approvals,
-                    "Mrg": mrg,
-                }
-                row_cells = [Text(cells[c], style=style) for c in columns]
-                for column, cell in zip(columns, row_cells):
-                    if column in CHECK_COLUMNS and cell.plain.startswith("✓"):
-                        cell.stylize("green", 0, 1)
-                table.add_row(
-                    state_text,
-                    *row_cells,
-                    key=f"{pr['repo']}#{pr['number']}",
-                )
+            self.query_one(f"#{table_id}", PrTable).populate(prs, screen_width)
 
         # Restore focus or default to first table (skip if comments panel is open)
         if self.query_one("#comments", CommentsPanel).display:
@@ -494,18 +431,12 @@ class GhMail(NavigationMixin, App):
             table = self.query_one(f"#{focused_id}", DataTable)
             row = min(focused_row, table.row_count - 1)
             if row >= 0:
-                table.move_cursor(row=row)
+                table.move_cursor(row=row, column=focused_column)
             table.focus()
         else:
             table = self.query_one("#prs", DataTable)
             table.focus()
         self.call_after_refresh(self._on_screen_focused, self.screen.focused)
-
-    @staticmethod
-    def _get_pr_key(table, row):
-        """Return (repo, number) from a specific row's key."""
-        row_key, _ = table.coordinate_to_cell_key(Coordinate(row, 0))
-        return row_key.value.rsplit("#", 1)
 
     def on_resize(self, event) -> None:
         if hasattr(self, "prs"):
@@ -513,12 +444,12 @@ class GhMail(NavigationMixin, App):
             self._populate_tables(preserve_focus=True,
                                   screen_width=event.size.width)
 
-    def on_data_table_row_highlighted(self, event) -> None:
+    def on_data_table_cell_highlighted(self, event) -> None:
         # Update subtitle as the cursor moves within a table.
         table = event.data_table
         prs = self.prs.get(table.id or "", [])
-        if 0 <= event.cursor_row < len(prs):
-            self.sub_title = prs[event.cursor_row]["title"]
+        if 0 <= event.coordinate.row < len(prs):
+            self.sub_title = prs[event.coordinate.row]["title"]
 
     def _on_screen_focused(self, focused) -> None:
         # Update subtitle when focus moves to a different table (tab key).
@@ -533,13 +464,19 @@ class GhMail(NavigationMixin, App):
     def action_cursor_up(self) -> None:
         self._focused_table().action_cursor_up()
 
+    def action_cursor_left(self) -> None:
+        self._focused_table().action_cursor_left()
+
+    def action_cursor_right(self) -> None:
+        self._focused_table().action_cursor_right()
+
     def action_mark_read(self) -> None:
         table = self._focused_table()
         self._mark_row_read(table, table.cursor_row)
         panel = self.query_one("#comments", CommentsPanel)
         if panel.display:
             prs = self.prs.get(table.id or "", [])
-            repo, number = self._get_pr_key(table, table.cursor_row)
+            repo, number = table.pr_key(table.cursor_row)
             comments.populate_panel(panel, repo, number, prs[table.cursor_row]["read_at"])
 
     def _selected_pr_key(self):
@@ -547,7 +484,7 @@ class GhMail(NavigationMixin, App):
         table = self._focused_table()
         if table.row_count == 0:
             return None
-        return self._get_pr_key(table, table.cursor_row)
+        return table.pr_key(table.cursor_row)
 
     def _hide_comments(self) -> None:
         panel = self.query_one("#comments", CommentsPanel)
@@ -561,16 +498,11 @@ class GhMail(NavigationMixin, App):
         prs = self.prs.get(table.id or "", [])
         if row >= len(prs) or prs[row]["state"] == "read":
             return
-        repo, number = self._get_pr_key(table, row)
+        repo, number = table.pr_key(row)
         store.mark_read(repo, number)
         prs[row]["state"] = "read"
         prs[row]["read_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        table.update_cell_at(Coordinate(row, STATE_COL), Text(STATE_DISPLAY["read"], style="dim"))
-        # Dim the entire row
-        for col in range(len(table.columns)):
-            val = table.get_cell_at(Coordinate(row, col)).copy()
-            val.stylize("dim")
-            table.update_cell_at(Coordinate(row, col), val)
+        table.dim_row(row)
 
     def _show_comments(self) -> None:
         key = self._selected_pr_key()
@@ -660,6 +592,25 @@ class GhMail(NavigationMixin, App):
     def action_quit(self):
         self.push_screen(QuitScreen(), callback=self._handle_quit)
 
+    def action_copy_cell(self) -> None:
+        table = self._focused_table()
+        if table.row_count == 0:
+            return
+        text = table.get_cell_at(table.cursor_coordinate).plain
+        if not text:
+            self.notify("Nothing to copy", severity="warning")
+            return
+        self.copy_to_clipboard(text)
+        # copy_to_clipboard relies on OSC 52, which some terminals (e.g. macOS
+        # Terminal) and textual-serve's browser terminal ignore. Locally on
+        # macOS, pbcopy always works.
+        if sys.platform == "darwin" and not os.environ.get("SSH_CONNECTION"):
+            try:
+                subprocess.run(["pbcopy"], input=text, text=True, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        self.notify(f"Copied: {text}")
+
     def action_pr_info(self) -> None:
         table = self._focused_table()
         if table.row_count == 0:
@@ -672,7 +623,6 @@ class GhMail(NavigationMixin, App):
         self.push_screen(HelpScreen())
 
 if __name__ == "__main__":
-    import sys
     if "--window" in sys.argv[1:] or "-w" in sys.argv[1:]:
         import window
         window.run_windowed()
