@@ -28,6 +28,15 @@ STATE_DISPLAY = {
     "unread": "●",
     "read": "●",
 }
+BRANCH_MAX_WIDTH = 20
+COLUMNS = ["#", "Repo", "Target", "Source", "Title", "Author", "Stack",
+           "Rdy", "CI", "App", "Mrg"]
+CHECK_COLUMNS = {"Rdy", "CI", "App", "Mrg"}
+
+
+def _visible_columns():
+    excluded = config.read_config()["exclude-columns"]
+    return [c for c in COLUMNS if c.lower() not in excluded]
 
 class CommentsPanel(VerticalScroll):
     """Scrollable panel for PR comments with its own key bindings."""
@@ -120,6 +129,8 @@ class HelpScreen(ModalScreen):
                 "\n"
                 "[b]Columns[/b]\n"
                 "  [red]●[/red] / [dim]●[/dim]         Unread / read\n"
+                "  Target        Branch the PR merges into\n"
+                "  Source        Branch the PR merges from\n"
                 "  Stack         Stack number and PR position / total\n"
                 "  Rdy           Ready for review (✓ = non-draft)\n"
                 "  CI            Jenkins approved\n"
@@ -161,8 +172,8 @@ class PrInfoScreen(ModalScreen):
             Label(f"#{pr['number']} {pr['title']}", id="pr-info-title"),
             Label(
                 f"Repo:   {pr['repo']}\n"
-                f"From:   {head_ref}\n"
-                f"To:     {base_ref}\n"
+                f"Source: {head_ref}\n"
+                f"Target: {base_ref}\n"
                 f"Author: {pr['author']}\n"
                 f"Draft:  {draft}",
                 id="pr-info-body",
@@ -252,6 +263,11 @@ class GhMail(NavigationMixin, App):
         self._initializing = False
         for table_id, _, title, _ in ghapi.sections():
             self.query_one(f"#group-{table_id}").border_title = title
+        unknown = (config.read_config()["exclude-columns"]
+                   - {c.lower() for c in COLUMNS})
+        if unknown:
+            self.notify(f"Unknown exclude-columns: {', '.join(sorted(unknown))}",
+                        severity="warning")
         self.watch(self.screen, "focused", self._on_screen_focused)
         threading.Thread(target=self._fetch_worker, daemon=True).start()
         self.set_interval(POLL_INTERVAL, self._poll_updates)
@@ -396,7 +412,7 @@ class GhMail(NavigationMixin, App):
     def _show_loading(self, show: bool) -> None:
         self.query_one(LoadingIndicator).display = show
 
-    def _populate_tables(self, preserve_focus=False) -> None:
+    def _populate_tables(self, preserve_focus=False, screen_width=None) -> None:
         # Save focus state before clearing
         focused_id = None
         focused_row = 0
@@ -412,7 +428,20 @@ class GhMail(NavigationMixin, App):
             len(pr.get("stack") or "")
             for prs in self.prs.values() for pr in prs
         ])
-        title_width = max(20, self.size.width - 74 - stack_width - 2)
+        target_width = min(BRANCH_MAX_WIDTH, max([len("Target")] + [
+            len(pr.get("base_ref") or "")
+            for prs in self.prs.values() for pr in prs
+        ]))
+        source_width = min(BRANCH_MAX_WIDTH, max([len("Source")] + [
+            len(pr.get("head_ref") or "")
+            for prs in self.prs.values() for pr in prs
+        ]))
+        columns = _visible_columns()
+        title_width = max(20, (screen_width or self.size.width) - 74 - sum(
+            width + 2 for column, width in (("Stack", stack_width),
+                                            ("Target", target_width),
+                                            ("Source", source_width))
+            if column in columns))
 
         cfg = config.read_config()
         repo_name_map = cfg.get("repo-name-map")
@@ -422,8 +451,7 @@ class GhMail(NavigationMixin, App):
             table.cursor_type = "row"
             table.cursor_foreground_priority = "renderable"
             table.zebra_stripes = True
-            table.add_columns("", "#", "Repo", "Title", "Author", "Stack",
-                              "Rdy", "CI", "App", "Mrg")
+            table.add_columns("", *columns)
             for pr in prs:
                 ci = "✓" if pr["jenkins_approved"] else ""
                 approvals = str(pr["approval_count"]) if pr["approval_count"] else ""
@@ -434,20 +462,24 @@ class GhMail(NavigationMixin, App):
                 style = "dim" if pr["state"] == "read" else ""
                 state_text = Text(STATE_DISPLAY[pr["state"]],
                                   style="dim" if pr["state"] == "read" else "red")
-                cells = [
-                    str(pr["number"]),
-                    repo_name_map.get(pr["repo"], pr["repo"]),
-                    pr["title"][:title_width] + ("…" if len(pr["title"]) > title_width else ""),
-                    pr["author"][:15] + ("…" if len(pr["author"]) > 15 else ""),
-                    pr.get("stack") or "",
-                    ready,
-                    ci,
-                    approvals,
-                    mrg,
-                ]
-                row_cells = [Text(c, style=style) for c in cells]
-                for cell in row_cells[5:]:
-                    if cell.plain.startswith("✓"):
+                target = pr.get("base_ref") or ""
+                source = pr.get("head_ref") or ""
+                cells = {
+                    "#": str(pr["number"]),
+                    "Repo": repo_name_map.get(pr["repo"], pr["repo"]),
+                    "Target": target[:target_width] + ("…" if len(target) > target_width else ""),
+                    "Source": source[:source_width] + ("…" if len(source) > source_width else ""),
+                    "Title": pr["title"][:title_width] + ("…" if len(pr["title"]) > title_width else ""),
+                    "Author": pr["author"][:15] + ("…" if len(pr["author"]) > 15 else ""),
+                    "Stack": pr.get("stack") or "",
+                    "Rdy": ready,
+                    "CI": ci,
+                    "App": approvals,
+                    "Mrg": mrg,
+                }
+                row_cells = [Text(cells[c], style=style) for c in columns]
+                for column, cell in zip(columns, row_cells):
+                    if column in CHECK_COLUMNS and cell.plain.startswith("✓"):
                         cell.stylize("green", 0, 1)
                 table.add_row(
                     state_text,
@@ -477,7 +509,9 @@ class GhMail(NavigationMixin, App):
 
     def on_resize(self, event) -> None:
         if hasattr(self, "prs"):
-            self._populate_tables(preserve_focus=True)
+            # self.size still holds the old size while this event is handled.
+            self._populate_tables(preserve_focus=True,
+                                  screen_width=event.size.width)
 
     def on_data_table_row_highlighted(self, event) -> None:
         # Update subtitle as the cursor moves within a table.

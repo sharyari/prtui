@@ -115,3 +115,17 @@ shown in one of the other tables are not repeated in it.
 custom-query:is:pr is:open mentions:@me
 custom-query-label:Mentions
 ```
+
+Table columns can be hidden by listing their titles (case-insensitive) in
+`exclude-columns`. Available columns: `#`, `Repo`, `Target`, `Source`,
+`Title`, `Author`, `Stack`, `Rdy`, `CI`, `App`, `Mrg`. By default `Author` is
+hidden, and `Repo` too if only one repo is configured; leave the value empty
+to show all columns.
+
+```
+exclude-columns:Repo,Stack
+```
+
+When a setting with a default (currently only `exclude-columns`) is missing
+from `config`, prtui appends it with its default value and a short comment.
+Existing settings are never changed.
