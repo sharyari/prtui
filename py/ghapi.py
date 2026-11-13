@@ -22,61 +22,78 @@ _CI_URL_PATTERN = _cfg.get("ci-url-pattern", "")
 _CUSTOM_QUERY = _cfg.get("custom-query", "")
 
 
-def _paginate(url, params=None):
-    """Paginate a GitHub API endpoint, yielding JSON items."""
-    params = params or {"per_page": 100}
-    while url:
-        resp = requests.get(url, headers=HEADERS, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        yield from (data["items"] if "items" in data else data)
-        url = resp.links.get("next", {}).get("url")
-        params = {}
+def _graphql(query, variables=None):
+    resp = requests.post(f"{API}/graphql", headers=HEADERS,
+                         json={"query": query, "variables": variables or {}})
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("errors"):
+        raise RuntimeError(f"GraphQL: {data['errors']}")
+    return data["data"]
+
+
+# REST shows these bots under a different name than GraphQL.
+_BOT_NAMES = {"copilot-pull-request-reviewer": "Copilot",
+              "copilot-swe-agent": "Copilot"}
+
+
+def _login(node):
+    """Return the author's login as the REST API shows it."""
+    author = node.get("author") or {"login": "ghost"}
+    if author.get("__typename") == "Bot":
+        return _BOT_NAMES.get(author["login"], f"{author['login']}[bot]")
+    return author["login"]
+
+
+def _stack_label(entry):
+    """Format a PR's stack number, position, and size for display."""
+    if not entry:
+        return ""
+    stack = entry["stack"]
+    return f"#{stack['number']} ({entry['position']}/{stack['size']})"
+
+
+_STACK = "stackEntry { position stack { number size } }"
+
+_SEARCH = """
+query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest {
+      number title url updatedAt isDraft
+      repository { nameWithOwner }
+      author { __typename login }
+      %s
+    } }
+  }
+}
+""" % _STACK
 
 
 def _search_prs(query, pr_type):
     """Run a GitHub search and return matching PRs."""
-    return [
-        {
+    prs, after = [], None
+    while True:
+        page = _graphql(_SEARCH, {"q": query, "after": after})["search"]
+        prs += [{
             "number": item["number"],
-            "repo": item["repository_url"].replace(f"{API}/repos/", ""),
-            "author": item["user"]["login"],
+            "repo": item["repository"]["nameWithOwner"],
+            "author": _login(item),
             "title": item["title"],
-            "url": item["html_url"],
-            "updated_at": item["updated_at"],
+            "url": item["url"],
+            "updated_at": item["updatedAt"],
             "type": pr_type,
-            "draft": item.get("draft", False),
-        }
-        for item in _paginate(f"{API}/search/issues",
-                              {"q": query,
-                               "per_page": 100,
-                               "advanced_search": "false"})
-    ]
+            "draft": item["isDraft"],
+            "stack": _stack_label(item["stackEntry"]),
+        } for item in page["nodes"]]
+        if not page["pageInfo"]["hasNextPage"]:
+            return prs
+        after = page["pageInfo"]["endCursor"]
 
 
 def _repo_query():
     """Build the repo: part of a search query."""
     return " ".join(f"repo:{r}" for r in REPOS)
-
-
-def _stack_label(stack):
-    """Format GitHub's stack number, position, and size for display."""
-    if not stack:
-        return ""
-    return f"#{stack['number']} ({stack['position']}/{stack['size']})"
-
-
-def _get_stack_labels(repo):
-    """Fetch current stack membership for all PRs in a repository."""
-    labels = {}
-    for stack in _paginate(f"{API}/repos/{repo}/stacks"):
-        members = stack["pull_requests"]
-        for position, pr in enumerate(members, 1):
-            labels[pr["number"]] = _stack_label({
-                "number": stack["number"], "position": position,
-                "size": len(members),
-            })
-    return labels
 
 
 def sections():
@@ -122,161 +139,156 @@ _REVIEW_TYPE = {
 }
 
 
-def get_reviews(pr_number, repo):
-    """Fetch reviews for a PR.
+def _list(name, fields, after=None):
+    """GraphQL selection for one page of a list field."""
+    after = f', after: "{after}"' if after else ""
+    return (f"{name}(first: 100{after}) {{ pageInfo {{ hasNextPage endCursor }}"
+            f" nodes {{ {fields} }} }}")
 
-    Returns (approvers, review_comments) where approvers is a list of
-    usernames whose latest non-COMMENTED state is APPROVED, and
-    review_comments is a list of comment dicts for storing in the
-    COMMENTS table.
-    """
+
+_THREAD_COMMENT = ("databaseId author { __typename login } body createdAt"
+                   " updatedAt path diffHunk state replyTo { databaseId }")
+# The PR's lists, each fetched 100 at a time.
+_LISTS = {
+    "comments": "databaseId author { __typename login } body createdAt"
+                " updatedAt",
+    "reviews": "databaseId author { __typename login } state body"
+               " submittedAt",
+    "reviewThreads": "id " + _list("comments", _THREAD_COMMENT),
+    "commits": "commit { oid message committedDate"
+               " author { name user { login } } }",
+}
+
+_PR_FIELDS = """
+fragment pr on PullRequest {
+  isDraft mergeable mergeStateStatus headRefName baseRefName headRefOid
+  %s
+  %s
+  headCommit: commits(last: 1) {
+    nodes { commit { status { contexts { state targetUrl } } } }
+  }
+}
+""" % (_STACK, "\n  ".join(_list(n, f) for n, f in _LISTS.items()))
+
+
+def _fetch_remaining_pages(pr, d):
+    """Append the pages beyond the first 100 items of each list to d."""
+    owner, name = pr["repo"].split("/")
+    for conn, fields in _LISTS.items():
+        page = d[conn]
+        while page["pageInfo"]["hasNextPage"]:
+            sel = _list(conn, fields, page["pageInfo"]["endCursor"])
+            page = _graphql(
+                f'query {{ repository(owner: "{owner}", name: "{name}")'
+                f' {{ pullRequest(number: {pr["number"]}) {{ {sel} }} }} }}'
+            )["repository"]["pullRequest"][conn]
+            d[conn]["nodes"] += page["nodes"]
+    for thread in d["reviewThreads"]["nodes"]:
+        page = thread["comments"]
+        while page["pageInfo"]["hasNextPage"]:
+            sel = _list("comments", _THREAD_COMMENT,
+                        page["pageInfo"]["endCursor"])
+            page = _graphql(
+                f'query {{ node(id: "{thread["id"]}")'
+                f' {{ ... on PullRequestReviewThread {{ {sel} }} }} }}'
+            )["node"]["comments"]
+            thread["comments"]["nodes"] += page["nodes"]
+
+
+def _pr_from_graphql(pr, d):
+    """Fill pr from a GraphQL response; returns (pr, comments)."""
+    number, repo = pr["number"], pr["repo"]
+
+    def comment(node, **extra):
+        return {"pr_number": number, "pr_repo": repo, "user": _login(node),
+                "path": "", "diff_hunk": "", "in_reply_to_id": None,
+                **extra}
+
+    comments = [comment(c, id=c["databaseId"], body=c["body"],
+                        created_at=c["createdAt"], updated_at=c["updatedAt"])
+                for c in d["comments"]["nodes"]]
+    for thread in d["reviewThreads"]["nodes"]:
+        for c in thread["comments"]["nodes"]:
+            if c["state"] == "PENDING":
+                continue
+            comments.append(comment(
+                c, id=c["databaseId"], body=c["body"],
+                created_at=c["createdAt"], updated_at=c["updatedAt"],
+                path=c["path"], diff_hunk=c["diffHunk"],
+                in_reply_to_id=(c["replyTo"] or {}).get("databaseId")))
+
     latest_state = {}
-    review_comments = []
-    for r in _paginate(f"{API}/repos/{repo}/pulls/{pr_number}/reviews"):
-        user = r["user"]["login"]
+    for r in d["reviews"]["nodes"]:
         state = r["state"]
-        if state == "PENDING":
+        if state in ("PENDING", "COMMENTED"):
             continue
-        if state != "COMMENTED":
-            latest_state[user] = state
-            body = f"**[{state}]** {r['body']}" if r["body"] else f"**[{state}]**"
-            review_comments.append({
-                "id": r["id"],
-                "pr_number": pr_number,
-                "pr_repo": repo,
-                "user": user,
-                "body": body,
-                "created_at": r["submitted_at"],
-                "updated_at": r["submitted_at"],
-                "path": "",
-                "diff_hunk": "",
-                "in_reply_to_id": None,
-                "type": _REVIEW_TYPE.get(state, "comment"),
-            })
+        latest_state[_login(r)] = state
+        body = f"**[{state}]** {r['body']}" if r["body"] else f"**[{state}]**"
+        comments.append(comment(
+            r, id=r["databaseId"], body=body, created_at=r["submittedAt"],
+            updated_at=r["submittedAt"],
+            type=_REVIEW_TYPE.get(state, "comment")))
     approvers = [u for u, s in latest_state.items() if s == "APPROVED"]
-    return approvers, review_comments
 
+    for node in d["commits"]["nodes"]:
+        c = node["commit"]
+        sha = c["oid"]
+        author = (c["author"]["user"] or {}).get("login", c["author"]["name"])
+        comments.append(comment(
+            {"author": {"login": author}}, id=int(sha[:12], 16),
+            body=f"`{sha[:8]}` {c['message'].split(chr(10), 1)[0]}",
+            created_at=c["committedDate"], updated_at=c["committedDate"],
+            type="commit"))
 
-def get_comments(pr_number, repo):
-    """Fetch all comments on a PR (conversation + inline review)."""
-    comments = []
+    mergeable = {"MERGEABLE": d["mergeStateStatus"] != "BLOCKED",
+                 "CONFLICTING": False}.get(d["mergeable"])
 
-    for c in _paginate(f"{API}/repos/{repo}/issues/{pr_number}/comments"):
-        comments.append({
-            "id": c["id"],
-            "pr_number": pr_number,
-            "pr_repo": repo,
-            "user": c["user"]["login"],
-            "body": c["body"],
-            "created_at": c["created_at"],
-            "updated_at": c["updated_at"],
-            "path": "",
-            "diff_hunk": "",
-            "in_reply_to_id": None,
-        })
-
-    for c in _paginate(f"{API}/repos/{repo}/pulls/{pr_number}/comments"):
-        comments.append({
-            "id": c["id"],
-            "pr_number": pr_number,
-            "pr_repo": repo,
-            "user": c["user"]["login"],
-            "body": c["body"],
-            "created_at": c["created_at"],
-            "updated_at": c["updated_at"],
-            "path": c.get("path", ""),
-            "diff_hunk": c.get("diff_hunk", ""),
-            "in_reply_to_id": c.get("in_reply_to_id"),
-        })
-
-    comments.sort(key=lambda c: c["created_at"])
-    return comments
-
-
-def get_commits(pr_number, repo):
-    """Fetch commits on a PR, returned as comment-shaped dicts."""
-    commits = []
-    for c in _paginate(f"{API}/repos/{repo}/pulls/{pr_number}/commits"):
-        sha = c["sha"]
-        msg = c["commit"]["message"].split("\n", 1)[0]
-        author = (c["author"] or {}).get("login", c["commit"]["author"]["name"])
-        commits.append({
-            "id": int(sha[:12], 16),
-            "pr_number": pr_number,
-            "pr_repo": repo,
-            "user": author,
-            "body": f"`{sha[:8]}` {msg}",
-            "created_at": c["commit"]["committer"]["date"],
-            "updated_at": c["commit"]["committer"]["date"],
-            "path": "",
-            "diff_hunk": "",
-            "in_reply_to_id": None,
-            "type": "commit",
-        })
-    return commits
-
-
-def _get_pr_details(pr_number, repo):
-    """Fetch mergeability, CI details, branches, draft status, and stack info.
-
-    Returns (mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref,
-    stack). CI URL/SHA are None if Jenkins hasn't run on the current HEAD.
-    """
-    import re
-    data = requests.get(f"{API}/repos/{repo}/pulls/{pr_number}", headers=HEADERS)
-    data.raise_for_status()
-    data = data.json()
-
-    # Mergeability
-    mergeable = data.get("mergeable")
-    if mergeable is not None:
-        if not mergeable:
-            mergeable = False
-        else:
-            mergeable = data.get("mergeable_state") != "blocked"
-
-    # CI URL from commit statuses on the current HEAD
-    # Prefer a pending status (active run) over completed ones.
+    # Prefer a pending CI run (active) over a completed one.
     ci_url = None
-    ci_sha = None
-    sha = data["head"]["sha"]
     if _CI_URL_PATTERN:
-        statuses = requests.get(
-            f"{API}/repos/{repo}/commits/{sha}/statuses", headers=HEADERS)
-        statuses.raise_for_status()
-        pending_url = None
-        completed_url = None
-        for s in statuses.json():  # newest first
-            match = re.search(_CI_URL_PATTERN, s.get("target_url", ""))
+        import re
+        status = d["headCommit"]["nodes"][0]["commit"]["status"]
+        urls = {}
+        for s in (status or {}).get("contexts", []):
+            match = re.search(_CI_URL_PATTERN, s["targetUrl"] or "")
             if match:
-                if s["state"] == "pending" and pending_url is None:
-                    pending_url = match.group(0)
-                elif s["state"] != "pending" and completed_url is None:
-                    completed_url = match.group(0)
-                if pending_url and completed_url:
-                    break
-        chosen = pending_url or completed_url
-        if chosen:
-            ci_url = chosen
-            ci_sha = sha
+                urls.setdefault(s["state"] == "PENDING", match.group(0))
+        ci_url = urls.get(True) or urls.get(False)
 
-    return (mergeable, ci_url, sha, ci_sha, data.get("draft", False),
-            data["head"]["ref"], data["base"]["ref"],
-            _stack_label(data.get("stack")))
-
-
-def _fetch_pr_details(pr):
-    """Fetch comments, reviews, mergeability, and CI URL for a single PR."""
-    comments = get_comments(pr["number"], pr["repo"])
-    approvers, review_comments = get_reviews(pr["number"], pr["repo"])
-    comments.extend(review_comments)
-    comments.extend(get_commits(pr["number"], pr["repo"]))
-    pr["approvals"] = ",".join(approvers)
-    (pr["mergeable"], pr["ci_url"], pr["head_sha"],
-     pr["ci_sha"], pr["draft"],
-     pr["head_ref"], pr["base_ref"],
-     pr["stack"]) = _get_pr_details(pr["number"], pr["repo"])
+    pr.update(approvals=",".join(approvers), mergeable=mergeable,
+              ci_url=ci_url, head_sha=d["headRefOid"],
+              ci_sha=d["headRefOid"] if ci_url else None,
+              draft=d["isDraft"], head_ref=d["headRefName"],
+              base_ref=d["baseRefName"],
+              stack=_stack_label(d["stackEntry"]))
     return pr, comments
+
+
+def _fetch_details(prs):
+    """Fetch comments, reviews, mergeability, and CI URL for prs.
+
+    Returns [(pr, comments)], fetching 5 PRs per GraphQL query.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def fetch_batch(batch):
+        parts = []
+        for n, pr in enumerate(batch):
+            owner, name = pr["repo"].split("/")
+            parts.append(f'p{n}: repository(owner: "{owner}", name: "{name}")'
+                         f' {{ pullRequest(number: {pr["number"]}) {{ ...pr }} }}')
+        data = _graphql("query {\n" + "\n".join(parts) + "\n}" + _PR_FIELDS)
+        results = []
+        for n, pr in enumerate(batch):
+            d = data[f"p{n}"]["pullRequest"]
+            _fetch_remaining_pages(pr, d)
+            results.append(_pr_from_graphql(pr, d))
+        return results
+
+    batches = [prs[i:i + 5] for i in range(0, len(prs), 5)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return [r for results in pool.map(fetch_batch, batches)
+                for r in results]
 
 
 def poll_for_updates(on_progress=None):
@@ -286,8 +298,6 @@ def poll_for_updates(on_progress=None):
     re-fetches details only for changed PRs, and removes stale ones.
     Returns True if anything changed.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     def progress(msg):
         if on_progress:
             on_progress(msg)
@@ -320,16 +330,12 @@ def poll_for_updates(on_progress=None):
     stale = set(old.keys()) - current_keys
 
     # Stack sizes/positions can change without a PR's updated_at changing.
-    repos = sorted({pr["repo"] for pr in prs})
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        stacks = dict(zip(repos, pool.map(_get_stack_labels, repos)))
     changed_keys = {(pr["repo"], pr["number"]) for pr in changed}
     stack_updates = {}
     for pr in prs:
         key = (pr["repo"], pr["number"])
-        label = stacks[pr["repo"]].get(pr["number"], "")
-        if key not in changed_keys and old_stacks.get(key, "") != label:
-            stack_updates[key] = label
+        if key not in changed_keys and old_stacks.get(key, "") != pr["stack"]:
+            stack_updates[key] = pr["stack"]
 
     if not changed and not stale and not stack_updates:
         progress("No changes")
@@ -337,14 +343,9 @@ def poll_for_updates(on_progress=None):
 
     # Fetch details only for changed PRs
     comments = []
-    done = 0
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_fetch_pr_details, pr): pr for pr in changed}
-        for future in as_completed(futures):
-            pr, pr_comments = future.result()
-            comments.extend(pr_comments)
-            done += 1
-            progress(f"Updating ({done}/{len(changed)})...")
+    progress(f"Updating {len(changed)} PRs...")
+    for pr, pr_comments in _fetch_details(changed):
+        comments.extend(pr_comments)
 
     with prdb.connection() as cursor:
         for pr in changed:
@@ -377,7 +378,7 @@ def refresh_pr(repo, number):
         row = cursor.fetchone()
     if not row:
         return False
-    pr, comments = _fetch_pr_details(dict(row))
+    [(pr, comments)] = _fetch_details([dict(row)])
     with prdb.connection() as cursor:
         prdb.pr_insert(cursor, pr)
         for comment in comments:
