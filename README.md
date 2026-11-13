@@ -118,9 +118,12 @@ custom-query-label:Mentions
 
 Table columns can be hidden by listing their titles (case-insensitive) in
 `exclude-columns`. Available columns: `#`, `Repo`, `Target`, `Source`,
-`Title`, `Author`, `Stack`, `Rdy`, `CI`, `App`, `Mrg`. By default `Author` is
-hidden, and `Repo` too if only one repo is configured; leave the value empty
-to show all columns.
+`Title`, `Author`, `Stack`, `Rdy`, `CI`, `App`, `Mrg`, `Note`. By default
+`Author` and `Note` are hidden, and `Repo` too if only one repo is configured;
+leave the value empty to show all columns.
+
+`Note` holds your own note for a PR, stored in the local database. Press Enter
+on a Note cell to edit it; Enter saves and Esc cancels.
 
 ```
 exclude-columns:Repo,Stack

@@ -125,6 +125,26 @@ PrInfoScreen {
     width: 1fr;
 }
 
+/* Note editor */
+NoteScreen {
+    align: center middle;
+}
+#note-dialog {
+    padding: 1 2;
+    width: 72;
+    height: auto;
+    border: thick $background 80%;
+    background: $surface;
+}
+#note-title {
+    text-style: bold;
+    padding-bottom: 1;
+}
+#note-help {
+    color: $text-muted;
+    padding-top: 1;
+}
+
 /* CI warning dialog */
 CiWarningScreen {
     align: center middle;

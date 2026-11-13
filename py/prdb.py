@@ -23,6 +23,7 @@ pr_table_creation_query = """
         head_ref TEXT,
         base_ref TEXT,
         stack TEXT DEFAULT '',
+        note TEXT DEFAULT '',
         PRIMARY KEY(repo, number)
     );
 """
@@ -96,6 +97,12 @@ def create_pr_table(cursor):
     except sqlite3.OperationalError:
         pass
 
+    # Migrate existing DBs that predate user notes.
+    try:
+        cursor.execute("ALTER TABLE PRS ADD COLUMN note TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
 def pr_insert(cursor, pr):
     read_at = pr["updated_at"] if pr["type"] == "mine" else None
     cursor.execute(
@@ -123,7 +130,7 @@ def pr_insert(cursor, pr):
 def pr_get_all(cursor, type):
     cursor.execute(
         "SELECT number, repo, type, author, title, updated_at, read_at,"
-        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref, stack FROM PRS WHERE type=?"
+        " approvals, mergeable, ci_url, head_sha, ci_sha, draft, head_ref, base_ref, stack, note FROM PRS WHERE type=?"
         " ORDER BY draft, updated_at DESC", (type,)
     )
     return [dict(r) for r in cursor.fetchall()]
@@ -141,6 +148,12 @@ def pr_mark_read(cursor, repo, number):
         "UPDATE PRS SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
         " WHERE repo = ? AND number = ?",
         (repo, number)
+    )
+
+def pr_set_note(cursor, repo, number, note):
+    cursor.execute(
+        "UPDATE PRS SET note = ? WHERE repo = ? AND number = ?",
+        (note, repo, number)
     )
 
 def create_comments_table(cursor):

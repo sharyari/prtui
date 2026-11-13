@@ -2,7 +2,7 @@
 
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, DataTable, LoadingIndicator
-from textual.widgets import Label, Button
+from textual.widgets import Label, Button, Input
 from textual.containers import Vertical, VerticalScroll, Grid
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -117,6 +117,7 @@ class HelpScreen(ModalScreen):
                 "  b             Open CI build in browser\n"
                 "  t             Open linked ticket in browser\n"
                 "  y / dbl-click Copy cell under cursor\n"
+                "  Enter         Edit note (on the Note column)\n"
                 "\n"
                 "[b]Columns[/b]\n"
                 "  [red]●[/red] / [dim]●[/dim]         Unread / read\n"
@@ -127,6 +128,7 @@ class HelpScreen(ModalScreen):
                 "  CI            Jenkins approved\n"
                 "  App           Number of human approvals (✓ = you approved)\n"
                 "  Mrg           Mergeable (✓ = ready)\n"
+                "  Note          Your own note, stored locally\n"
                 "\n"
                 "[b]Other[/b]\n"
                 "  i             PR details (branch info)\n"
@@ -178,6 +180,30 @@ class PrInfoScreen(ModalScreen):
 
     def action_dismiss(self) -> None:
         self.dismiss()
+
+
+class NoteScreen(ModalScreen):
+    """Edits the user's note for a PR; dismisses with the text or None."""
+    BINDINGS = [
+        Binding("escape", "dismiss", show=False),
+    ]
+
+    def __init__(self, title: str, note: str):
+        super().__init__()
+        self._title = title
+        self._note = note
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="note-dialog"):
+            yield Label(self._title, id="note-title")
+            yield Input(self._note, id="note-input")
+            yield Label("Enter to save, Esc to cancel", id="note-help")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
 
 
 class CiWarningScreen(ModalScreen):
@@ -618,6 +644,26 @@ class GhMail(NavigationMixin, App):
         prs = self.prs.get(table.id or "", [])
         pr = prs[table.cursor_row]
         self.push_screen(PrInfoScreen(pr))
+
+    def action_edit_note(self) -> None:
+        table = self._focused_table()
+        if table.row_count == 0:
+            return
+        _, column_key = table.coordinate_to_cell_key(table.cursor_coordinate)
+        if column_key.value != "Note":
+            return
+        pr = self.prs.get(table.id or "", [])[table.cursor_row]
+
+        def save(note):
+            if note is None:
+                return
+            store.set_note(pr["repo"], pr["number"], note)
+            pr["note"] = note
+            self._populate_tables(preserve_focus=True)
+
+        self.push_screen(
+            NoteScreen(f"#{pr['number']} {pr['title']}", pr.get("note") or ""),
+            callback=save)
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

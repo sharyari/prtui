@@ -55,6 +55,12 @@ def mark_read(repo, number):
         prdb.pr_mark_read(cursor, repo, number)
 
 
+def set_note(repo, number, note):
+    """Store the user's note for a PR."""
+    with prdb.connection() as cursor:
+        prdb.pr_set_note(cursor, repo, number, note)
+
+
 def get_ci_url(repo, number):
     """Return the stored CI URL for a PR, or None."""
     with prdb.connection() as cursor:

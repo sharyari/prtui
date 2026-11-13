@@ -2,6 +2,7 @@
 
 from rich.cells import cell_len
 from rich.text import Text
+from textual.binding import Binding
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
@@ -14,11 +15,12 @@ STATE_DISPLAY = {
     "read": "●",
 }
 COLUMNS = ["#", "Rdy", "CI", "App", "Mrg", "Title", "Source", "Target",
-           "Repo", "Author", "Stack"]
+           "Repo", "Author", "Stack", "Note"]
 CHECK_COLUMNS = {"Rdy", "CI", "App", "Mrg"}
 # Columns that shrink to fit the screen, but never below these widths;
 # beyond that the table scrolls horizontally.
-MIN_WIDTHS = {"Target": 20, "Source": 20, "Title": 40, "Author": 16}
+MIN_WIDTHS = {"Target": 20, "Source": 20, "Title": 40, "Author": 16,
+              "Note": 20}
 # Table group border and padding, the state column and a vertical scrollbar.
 TABLE_CHROME = 4 + 3 + 2
 CELL_PADDING = 2
@@ -63,12 +65,17 @@ def pr_cells(pr, repo_name_map):
         "CI": "✓" if pr["jenkins_approved"] else "",
         "App": approvals,
         "Mrg": "✓" if pr.get("mergeable") else "",
+        "Note": pr.get("note") or "",
     }
 
 
 class PrTable(DataTable):
     """DataTable that also highlights the cursor's row with a cell cursor."""
     COMPONENT_CLASSES = DataTable.COMPONENT_CLASSES | {"datatable--cursor-row"}
+    BINDINGS = [Binding("enter", "edit_note", show=False)]
+
+    def action_edit_note(self) -> None:
+        self.app.action_edit_note()
 
     # _get_row_style is DataTable-internal; it styles every cell in a row.
     def _get_row_style(self, row_index, base_style):

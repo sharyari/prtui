@@ -7,7 +7,7 @@ STATE_PATH = Path(__file__).resolve().parent.parent / ".state"
 
 def _default_exclude_columns(cfg):
     repos = [r for r in cfg.get("repos", "").split(",") if r.strip()]
-    return "Author,Repo" if len(repos) == 1 else "Author"
+    return "Author,Repo,Note" if len(repos) == 1 else "Author,Note"
 
 
 # Appended to the config file when the key is missing, so changed defaults
